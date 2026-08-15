@@ -67,7 +67,6 @@ export default async function TeamPage() {
               id: { not: user.id },
               teamManagers: {
                 none: {
-                  managerId: user.id,
                   status: { in: ["pending", "confirmed", "admin_confirmed"] },
                 },
               },
@@ -98,6 +97,49 @@ export default async function TeamPage() {
           })
         : Promise.resolve([]),
     ]);
+  const activeDelegations = await prisma.teamDelegation.findMany({
+    where: { assistantId: user.id, active: true },
+    include: {
+      manager: { select: { id: true, username: true, displayName: true } },
+      project: { select: { id: true, name: true } },
+    },
+    orderBy: [{ project: { name: "asc" } }, { manager: { displayName: "asc" } }, { manager: { username: "asc" } }],
+  });
+  const delegatedSupport = await Promise.all(
+    activeDelegations.map(async (delegation) => {
+      const delegatedDownlineIds = await getDownlineUserIds(delegation.managerId);
+      const delegatedUserIds = [delegation.managerId, ...delegatedDownlineIds];
+      const tasks = await prisma.task.findMany({
+        where: {
+          AND: [
+            { deletedAt: null },
+            { projectId: delegation.projectId },
+            {
+              OR: [
+                { ownerId: { in: delegatedUserIds } },
+                { ownerId: null, createdById: { in: delegatedUserIds } },
+              ],
+            },
+          ],
+        },
+        include: {
+          project: true,
+          status: true,
+          createdBy: { select: { id: true, username: true, displayName: true } },
+        },
+        orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }],
+        take: 12,
+      });
+      tasks.sort(compareOperationalPriority);
+
+      return {
+        manager: delegation.manager,
+        project: delegation.project,
+        downlineCount: delegatedDownlineIds.length,
+        tasks,
+      };
+    }),
+  );
 
   const childrenByManager = new Map<string, TeamRelationNode[]>();
   for (const relation of relations) {
@@ -135,6 +177,10 @@ export default async function TeamPage() {
         <PendingRequests requests={pendingRequests} />
       </section>
 
+      {delegatedSupport.length ? (
+        <DelegatedSupportPanel sections={delegatedSupport} />
+      ) : null}
+
       <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <div className="mb-4 flex items-center gap-2">
           <GitBranch size={18} aria-hidden="true" />
@@ -160,6 +206,50 @@ export default async function TeamPage() {
         )}
       </section>
     </AppShell>
+  );
+}
+
+function DelegatedSupportPanel({
+  sections,
+}: {
+  sections: Array<{
+    manager: UserOption;
+    project: { id: string; name: string };
+    downlineCount: number;
+    tasks: TeamTask[];
+  }>;
+}) {
+  return (
+    <section className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 shadow-sm">
+      <div className="mb-3 flex items-center gap-2">
+        <h2 className="text-base font-semibold text-blue-950">Đang hỗ trợ</h2>
+        <CountBadge>{sections.length}</CountBadge>
+      </div>
+      <div className="grid gap-3 xl:grid-cols-2">
+        {sections.map((section) => (
+          <div key={`${section.manager.id}:${section.project.id}`} className="rounded-md border border-blue-100 bg-white p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-slate-950">
+                  {section.manager.displayName || section.manager.username}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  @{section.manager.username} - {section.project.name} - {section.downlineCount} cấp dưới trong phạm vi hỗ trợ
+                </div>
+              </div>
+              <CountBadge>{section.tasks.length}</CountBadge>
+            </div>
+            <div className="mt-3">
+              <TeamTaskList
+                title="Nhiệm vụ trong phạm vi hỗ trợ"
+                tasks={section.tasks}
+                emptyText="Không có nhiệm vụ trong phạm vi hỗ trợ"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

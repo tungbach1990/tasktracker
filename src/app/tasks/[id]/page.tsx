@@ -21,7 +21,7 @@ import { TaskForm } from "@/components/task-form";
 import { canActOnApprovalForUser, isTaskFinalDone } from "@/lib/approvals";
 import { priorities, taskKinds, workflowStatusLabels } from "@/lib/constants";
 import { dateTime, shortDate } from "@/lib/format";
-import { canDeleteTask, canEditTask, canUpdateTaskExecution, canViewTask, hasPermission, requireActiveUser } from "@/lib/authz";
+import { canActAsDelegatedManager, canDeleteTask, canEditTask, canUpdateTaskExecution, canViewTask, hasPermission, requireActiveUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getTaskReferenceData } from "@/lib/queries";
 import { safeUserSelect } from "@/lib/safe-selects";
@@ -37,7 +37,6 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   const canUpdate = await canUpdateTaskExecution(user, id);
   const canEdit = await canEditTask(user, id);
   const canDelete = await canDeleteTask(user, id);
-  const canCreate = hasPermission(user, "task.create");
 
   const task = await prisma.task.findUnique({
     where: { id },
@@ -99,12 +98,16 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
         orderBy: { createdAt: "desc" },
       },
       history: {
-        include: { user: { select: safeUserSelect } },
+        include: {
+          user: { select: safeUserSelect },
+          onBehalfOf: { select: safeUserSelect },
+        },
         orderBy: { createdAt: "desc" },
       },
       approvals: {
         include: {
           reviewer: { select: { id: true, username: true, displayName: true } },
+          delegatedFor: { select: { id: true, username: true, displayName: true } },
         },
         orderBy: [{ type: "asc" }, { round: "asc" }, { level: "asc" }],
       },
@@ -119,10 +122,11 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   const taskOwnerId = task.ownerId ?? task.createdById;
 
   const canEditTaskDetails = canEdit;
-  const canManageChildren = canCreate && canEdit;
+  const canCreateForTaskOwner = hasPermission(user, "task.create") || (await canActAsDelegatedManager(user.id, taskOwnerId, task.projectId));
+  const canManageChildren = canCreateForTaskOwner && canEdit;
   const canChooseProject = hasPermission(user, "task.view.all") || hasPermission(user, "project.manage");
   const referenceData = canEditTaskDetails || canManageChildren
-    ? await getTaskReferenceData(user, id, taskOwnerId)
+    ? await getTaskReferenceData(user, id, taskOwnerId, task.projectId)
     : null;
   const statusOwnerIds = Array.from(new Set([taskOwnerId, ...task.children.map((child) => child.ownerId ?? child.createdById)]));
   const cardStatuses = await prisma.taskStatusOption.findMany({
@@ -341,6 +345,9 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
                   <div className="text-sm font-medium text-slate-700">{historyActionLabel(event.action)}</div>
                   <div className="text-xs text-slate-500">
                     {event.user.displayName || event.user.username} - {dateTime(event.createdAt)}
+                    {event.onBehalfOf
+                      ? ` - làm thay ${event.onBehalfOf.displayName || event.onBehalfOf.username}`
+                      : ""}
                   </div>
                 </div>
               ))}
@@ -403,6 +410,8 @@ type ApprovalForTimeline = {
   actedAt: Date | null;
   reviewerId: string;
   reviewer: { id: string; username: string; displayName: string };
+  delegatedForId: string | null;
+  delegatedFor: { id: string; username: string; displayName: string } | null;
 };
 
 function ApprovalTimeline({
@@ -444,6 +453,11 @@ function ApprovalTimeline({
                   Người duyệt: {approval.reviewer.displayName || approval.reviewer.username}
                   {approval.actedAt ? ` - ${dateTime(approval.actedAt)}` : ""}
                 </div>
+                {approval.delegatedFor ? (
+                  <div className="mt-1 text-xs font-medium text-amber-700">
+                    Trợ lý cho {approval.delegatedFor.displayName || approval.delegatedFor.username}
+                  </div>
+                ) : null}
                 {approval.note ? <p className="mt-2 text-sm text-slate-700">{approval.note}</p> : null}
               </div>
               {currentApprovalIds.has(approval.id) ? (

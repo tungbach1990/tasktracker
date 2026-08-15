@@ -9,14 +9,16 @@ import { hasPermission, requireActiveUser, requirePermission } from "@/lib/authz
 import { prisma } from "@/lib/prisma";
 import { ensureUserCurrentProject } from "@/lib/projects";
 import { copyDefaultSettingsForUser } from "@/lib/settings";
-import { wouldCreateTeamCycle } from "@/lib/team";
+import { findBlockingDirectManager, wouldCreateTeamCycle } from "@/lib/team";
 import {
   directReportUserFormSchema,
   employeeLinkResponseSchema,
   existingReportRequestSchema,
   idSchema,
   normalizedKey,
+  teamDelegationFormSchema,
   teamRelationFormSchema,
+  transferDirectReportFormSchema,
 } from "@/lib/validation";
 
 function revalidateTeamViews() {
@@ -24,6 +26,8 @@ function revalidateTeamViews() {
   revalidatePath("/admin/team");
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
+  revalidatePath("/approvals");
+  revalidatePath("/kanban");
   revalidatePath("/settings");
 }
 
@@ -201,6 +205,9 @@ export async function requestExistingUserReportAction(formData: FormData) {
   ]);
   if (!report || !managerProjectId) redirect("/team");
 
+  const blockingDirectManager = await findBlockingDirectManager(report.id, existingRelation?.id);
+  if (blockingDirectManager) redirect("/team");
+
   const wouldCycle = await wouldCreateTeamCycle(manager.id, report.id, existingRelation?.id);
   if (wouldCycle) redirect("/team");
 
@@ -250,6 +257,9 @@ export async function respondEmployeeLinkAction(formData: FormData) {
   if (relation.reportId !== user.id && !hasPermission(user, "team.manage.all")) redirect("/dashboard");
 
   if (data.decision === "approve") {
+    const blockingDirectManager = await findBlockingDirectManager(relation.reportId, relation.id);
+    if (blockingDirectManager) redirect("/team");
+
     const wouldCycle = await wouldCreateTeamCycle(relation.managerId, relation.reportId, relation.id);
     if (wouldCycle) redirect("/team");
 
@@ -307,6 +317,9 @@ export async function saveTeamRelationAction(formData: FormData) {
 
   const activeOrPending = data.status !== "rejected";
   if (activeOrPending) {
+    const blockingDirectManager = await findBlockingDirectManager(data.reportId, data.id);
+    if (blockingDirectManager) redirect("/admin/team");
+
     const wouldCycle = await wouldCreateTeamCycle(data.managerId, data.reportId, data.id);
     if (wouldCycle) redirect("/admin/team");
   }
@@ -333,6 +346,152 @@ export async function saveTeamRelationAction(formData: FormData) {
       },
     });
   }
+
+  revalidateTeamViews();
+}
+
+export async function transferDirectReportAction(formData: FormData) {
+  const admin = await requirePermission("team.manage.all");
+  const data = transferDirectReportFormSchema.parse({
+    managerId: formData.get("managerId"),
+    reportId: formData.get("reportId"),
+  });
+  if (data.managerId === data.reportId) redirect("/admin/team");
+
+  const [manager, report, managerProjectId] = await Promise.all([
+    prisma.user.findFirst({
+      where: { id: data.managerId, enabled: true },
+      select: { id: true, username: true, displayName: true },
+    }),
+    prisma.user.findFirst({
+      where: { id: data.reportId, enabled: true },
+      select: { id: true, username: true, displayName: true },
+    }),
+    ensureUserCurrentProject(prisma, data.managerId),
+  ]);
+  if (!manager || !report || !managerProjectId) redirect("/admin/team");
+
+  const existingNewRelation = await prisma.teamRelation.findUnique({
+    where: { managerId_reportId: { managerId: data.managerId, reportId: data.reportId } },
+    select: { id: true },
+  });
+  const wouldCycle = await wouldCreateTeamCycle(data.managerId, data.reportId, existingNewRelation?.id);
+  if (wouldCycle) redirect("/admin/team");
+
+  const oldRelations = await prisma.teamRelation.findMany({
+    where: {
+      reportId: data.reportId,
+      managerId: { not: data.managerId },
+      status: { in: ["pending", "confirmed", "admin_confirmed"] },
+    },
+    select: { id: true, sourceEmployeeId: true },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    const employeeId = await ensureInternalEmployeeForReport(tx, {
+      managerId: manager.id,
+      report,
+      projectId: managerProjectId,
+      linkStatus: "confirmed",
+    });
+
+    if (oldRelations.length > 0) {
+      await tx.teamRelation.updateMany({
+        where: { id: { in: oldRelations.map((relation) => relation.id) } },
+        data: { status: "rejected", createdById: admin.id },
+      });
+
+      const oldEmployeeIds = oldRelations
+        .map((relation) => relation.sourceEmployeeId)
+        .filter((id): id is string => Boolean(id));
+      if (oldEmployeeIds.length > 0) {
+        await tx.employee.updateMany({
+          where: { id: { in: oldEmployeeIds } },
+          data: {
+            active: false,
+            linkStatus: "rejected",
+            linkRespondedAt: new Date(),
+          },
+        });
+      }
+    }
+
+    await tx.teamRelation.upsert({
+      where: { managerId_reportId: { managerId: manager.id, reportId: report.id } },
+      update: {
+        sourceEmployeeId: employeeId,
+        createdById: admin.id,
+        status: "admin_confirmed",
+      },
+      create: {
+        managerId: manager.id,
+        reportId: report.id,
+        sourceEmployeeId: employeeId,
+        createdById: admin.id,
+        status: "admin_confirmed",
+      },
+    });
+  });
+
+  revalidateTeamViews();
+}
+
+export async function saveTeamDelegationAction(formData: FormData) {
+  const admin = await requirePermission("team.manage.all");
+  const data = teamDelegationFormSchema.parse({
+    managerId: formData.get("managerId"),
+    assistantId: formData.get("assistantId"),
+    projectId: formData.get("projectId"),
+  });
+  if (data.managerId === data.assistantId) redirect("/admin/team");
+
+  const [users, project] = await Promise.all([
+    prisma.user.count({
+      where: { id: { in: [data.managerId, data.assistantId] }, enabled: true },
+    }),
+    prisma.project.findFirst({
+      where: { id: data.projectId, active: true },
+      select: { id: true },
+    }),
+  ]);
+  if (users !== 2 || !project) redirect("/admin/team");
+
+  await prisma.teamDelegation.upsert({
+    where: {
+      managerId_assistantId_projectId: {
+        managerId: data.managerId,
+        assistantId: data.assistantId,
+        projectId: data.projectId,
+      },
+    },
+    update: {
+      active: true,
+      revokedAt: null,
+      createdById: admin.id,
+    },
+    create: {
+      managerId: data.managerId,
+      assistantId: data.assistantId,
+      projectId: data.projectId,
+      createdById: admin.id,
+      active: true,
+    },
+  });
+
+  revalidateTeamViews();
+}
+
+export async function revokeTeamDelegationAction(formData: FormData) {
+  await requirePermission("team.manage.all");
+  const id = idSchema.parse(formData.get("id"));
+
+  await prisma.teamDelegation.update({
+    where: { id },
+    data: {
+      active: false,
+      revokedAt: new Date(),
+    },
+  });
 
   revalidateTeamViews();
 }

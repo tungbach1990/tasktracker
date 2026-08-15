@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Employee, Project, Task, TaskEmployee, TaskStatusOption } from "@prisma/client";
 import { Save } from "lucide-react";
 
@@ -19,36 +19,103 @@ type TaskForForm =
     })
   | null;
 
+export type TaskActingContext = {
+  owner: { id: string; username: string; displayName: string };
+  canChooseProject: boolean;
+  projects: Project[];
+  employees: EmployeeForForm[];
+  statuses: TaskStatusOption[];
+};
+
 export function TaskForm({
   task = null,
   projects,
   employees,
   statuses,
   canChooseProject = true,
+  actingContexts = [],
 }: {
   task?: TaskForForm;
   projects: Project[];
   employees: EmployeeForForm[];
   statuses: TaskStatusOption[];
   canChooseProject?: boolean;
+  actingContexts?: TaskActingContext[];
 }) {
   const action = task ? updateTaskAction : createTaskAction;
-  const selectedProject = projects.find((project) => project.id === task?.projectId) ?? projects[0];
+  const fallbackContext: TaskActingContext = useMemo(
+    () => ({
+      owner: { id: task?.ownerId ?? "", username: "", displayName: "Chính tôi" },
+      canChooseProject,
+      projects,
+      employees,
+      statuses,
+    }),
+    [canChooseProject, employees, projects, statuses, task?.ownerId],
+  );
+  const contexts = useMemo(
+    () => (task ? [fallbackContext] : actingContexts.length ? actingContexts : [fallbackContext]),
+    [actingContexts, fallbackContext, task],
+  );
+  const activeProjects = useMemo(() => {
+    const byId = new Map<string, Project>();
+    for (const context of contexts) {
+      for (const project of context.projects) byId.set(project.id, project);
+    }
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [contexts]);
+  const allEmployees = useMemo(() => {
+    const byId = new Map<string, EmployeeForForm>();
+    for (const context of contexts) {
+      for (const employee of context.employees) byId.set(employee.id, employee);
+    }
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [contexts]);
+  const selectedProject = activeProjects.find((project) => project.id === task?.projectId) ?? activeProjects[0];
   const initialProjectId = task?.projectId ?? selectedProject?.id ?? "";
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
-  const employeeIds = useMemo(
+  const initialEmployeeIds = useMemo(
     () => new Set(task?.employees.map((employee) => employee.employeeId) ?? []),
     [task?.employees],
   );
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState(initialEmployeeIds);
+  const selectedEmployeeOwnerIds = useMemo(() => {
+    const byId = new Map(allEmployees.map((employee) => [employee.id, employee]));
+    return Array.from(
+      new Set(
+        Array.from(selectedEmployeeIds)
+          .map((id) => byId.get(id)?.ownerId)
+          .filter((ownerId): ownerId is string => Boolean(ownerId)),
+      ),
+    );
+  }, [allEmployees, selectedEmployeeIds]);
+  const ownerConflict = selectedEmployeeOwnerIds.length > 1;
+  const selectedContext =
+    selectedEmployeeOwnerIds.length === 1
+      ? contexts.find((context) => context.owner.id === selectedEmployeeOwnerIds[0]) ?? contexts[0] ?? fallbackContext
+      : contexts[0] ?? fallbackContext;
+  const activeStatuses = selectedContext.statuses;
+  const canSelectProject = task ? canChooseProject : canChooseProject || activeProjects.length > 1;
+  const [selectedStatusId, setSelectedStatusId] = useState(task?.statusId ?? activeStatuses[0]?.id ?? "");
+
+  useEffect(() => {
+    if (!activeProjects.some((project) => project.id === selectedProjectId)) {
+      setSelectedProjectId(activeProjects[0]?.id ?? "");
+    }
+    if (!activeStatuses.some((status) => status.id === selectedStatusId)) {
+      setSelectedStatusId(activeStatuses[0]?.id ?? "");
+    }
+  }, [activeProjects, activeStatuses, selectedProjectId, selectedStatusId]);
+
   const visibleEmployees = useMemo(
     () =>
-      employees.filter((employee) => {
+      allEmployees.filter((employee) => {
         const inSelectedProject = selectedProjectId
           ? employee.projects?.some((scope) => scope.projectId === selectedProjectId)
           : true;
-        return inSelectedProject || employeeIds.has(employee.id);
+        return inSelectedProject || initialEmployeeIds.has(employee.id);
       }),
-    [employees, employeeIds, selectedProjectId],
+    [allEmployees, initialEmployeeIds, selectedProjectId],
   );
 
   return (
@@ -81,17 +148,20 @@ export function TaskForm({
           </select>
         </label>
 
-        {canChooseProject ? (
+        {canSelectProject ? (
           <label className="block">
             <span className="text-xs font-semibold uppercase text-slate-500">Dự án</span>
             <select
               name="projectId"
               required
               value={selectedProjectId}
-              onChange={(event) => setSelectedProjectId(event.target.value)}
+              onChange={(event) => {
+                setSelectedProjectId(event.target.value);
+                if (!task) setSelectedEmployeeIds(new Set());
+              }}
               className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
             >
-              {projects.map((project) => (
+              {activeProjects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.name}
                 </option>
@@ -112,10 +182,11 @@ export function TaskForm({
           <span className="text-xs font-semibold uppercase text-slate-500">Trạng thái</span>
           <select
             name="statusId"
-            defaultValue={task?.statusId ?? statuses[0]?.id}
+            value={selectedStatusId}
+            onChange={(event) => setSelectedStatusId(event.target.value)}
             className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           >
-            {statuses.map((status) => (
+            {activeStatuses.map((status) => (
               <option key={status.id} value={status.id}>
                 {status.label}
               </option>
@@ -224,7 +295,7 @@ export function TaskForm({
           {visibleEmployees.map((employee) => {
             const outOfSelectedProject =
               selectedProjectId &&
-              employeeIds.has(employee.id) &&
+              initialEmployeeIds.has(employee.id) &&
               !employee.projects?.some((scope) => scope.projectId === selectedProjectId);
 
             return (
@@ -236,7 +307,15 @@ export function TaskForm({
                   type="checkbox"
                   name="employeeIds"
                   value={employee.id}
-                  defaultChecked={employeeIds.has(employee.id)}
+                  checked={selectedEmployeeIds.has(employee.id)}
+                  onChange={(event) => {
+                    setSelectedEmployeeIds((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(employee.id);
+                      else next.delete(employee.id);
+                      return next;
+                    });
+                  }}
                   className="size-4 rounded border-slate-300"
                 />
                 <span>
@@ -254,11 +333,17 @@ export function TaskForm({
             </div>
           ) : null}
         </div>
+        {ownerConflict ? (
+          <p className="mt-2 text-sm font-medium text-red-700">
+            Chỉ chọn người nhận việc trong cùng một nhóm nhân sự.
+          </p>
+        ) : null}
       </div>
 
       <div className="mt-5 flex justify-end">
         <button
           type="submit"
+          disabled={ownerConflict || !selectedProjectId || !selectedStatusId}
           className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800"
         >
           <Save size={16} aria-hidden="true" />

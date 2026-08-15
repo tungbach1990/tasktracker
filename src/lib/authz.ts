@@ -4,7 +4,7 @@ import type { User } from "next-auth";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { getDownlineUserIds } from "@/lib/team";
+import { getActiveDelegationsForAssistant, getDownlineUserIds, hasActiveDelegation } from "@/lib/team";
 
 export type CurrentUser = {
   id: string;
@@ -95,6 +95,89 @@ export function hasPermission(user: Pick<CurrentUser, "permissions">, permission
   return user.permissions.includes(permission);
 }
 
+async function permissionKeysForUser(userId: string) {
+  const roles = await prisma.userRole.findMany({
+    where: { userId },
+    include: {
+      role: {
+        include: {
+          permissions: {
+            include: { permission: true },
+          },
+        },
+      },
+    },
+  });
+
+  return Array.from(
+    new Set(
+      roles.flatMap((userRole) =>
+        userRole.role.permissions.map((rolePermission) => rolePermission.permission.key),
+      ),
+    ),
+  );
+}
+
+async function delegatedTaskFilters(actorId: string) {
+  const delegations = await getActiveDelegationsForAssistant(actorId);
+  const filters: Prisma.TaskWhereInput[] = [];
+
+  for (const delegation of delegations) {
+    const { managerId, projectId } = delegation;
+    const permissions = await permissionKeysForUser(managerId);
+    if (permissions.includes("task.view.all")) {
+      filters.push({ projectId });
+      continue;
+    }
+
+    if (permissions.includes("task.view.own")) {
+      filters.push({
+        projectId,
+        OR: [{ ownerId: managerId }, { ownerId: null, createdById: managerId }],
+      });
+    }
+
+    filters.push(
+      { projectId, performerId: managerId },
+      {
+        projectId,
+        employees: {
+          some: {
+            employee: {
+              linkedUserId: managerId,
+              linkStatus: "confirmed",
+            },
+          },
+        },
+      },
+      {
+        projectId,
+        approvals: {
+          some: {
+            reviewerId: managerId,
+            status: "pending",
+          },
+        },
+      },
+    );
+
+    if (permissions.includes("team.view.downline")) {
+      const downlineIds = await getDownlineUserIds(managerId);
+      if (downlineIds.length > 0) {
+        filters.push({
+          projectId,
+          OR: [
+            { ownerId: { in: downlineIds } },
+            { ownerId: null, createdById: { in: downlineIds } },
+          ],
+        });
+      }
+    }
+  }
+
+  return { all: false, filters };
+}
+
 export async function taskAccessWhere(user: CurrentUser): Promise<Prisma.TaskWhereInput> {
   const notDeleted: Prisma.TaskWhereInput = { deletedAt: null };
   if (hasPermission(user, "task.view.all")) return notDeleted;
@@ -139,7 +222,28 @@ export async function taskAccessWhere(user: CurrentUser): Promise<Prisma.TaskWhe
     }
   }
 
+  const delegated = await delegatedTaskFilters(user.id);
+  filters.push(...delegated.filters);
+
   return filters.length > 0 ? { AND: [notDeleted, { OR: filters }] } : { id: { in: [] } };
+}
+
+export async function canActAsDelegatedManager(actorId: string, managerId: string, projectId: string) {
+  return hasActiveDelegation(managerId, actorId, projectId);
+}
+
+export async function isTaskInDelegatedScope(actorId: string, taskId: string) {
+  const delegated = await delegatedTaskFilters(actorId);
+  if (delegated.filters.length === 0) return false;
+
+  const task = await prisma.task.findFirst({
+    where: {
+      AND: [{ id: taskId, deletedAt: null }, { OR: delegated.filters }],
+    },
+    select: { id: true },
+  });
+
+  return Boolean(task);
 }
 
 export async function canAccessProject(userId: string, projectId: string, canViewAll: boolean) {
@@ -178,7 +282,8 @@ export async function canViewTask(user: CurrentUser, taskId: string) {
 }
 
 export async function canEditTask(user: CurrentUser, taskId: string) {
-  if (!hasPermission(user, "task.update")) return false;
+  const delegated = await isTaskInDelegatedScope(user.id, taskId);
+  if (!hasPermission(user, "task.update") && !delegated) return false;
   if (hasPermission(user, "task.view.all")) return true;
 
   const task = await prisma.task.findUnique({
@@ -186,12 +291,14 @@ export async function canEditTask(user: CurrentUser, taskId: string) {
     select: { createdById: true, ownerId: true },
   });
 
-  return task?.createdById === user.id || task?.ownerId === user.id;
+  return task?.createdById === user.id || task?.ownerId === user.id || delegated;
 }
 
 export async function canUpdateTaskExecution(user: CurrentUser, taskId: string) {
-  if (!hasPermission(user, "task.update")) return false;
+  const canUpdateByRole = hasPermission(user, "task.update");
   if (hasPermission(user, "task.view.all")) return true;
+  const delegated = await isTaskInDelegatedScope(user.id, taskId);
+  if (!canUpdateByRole && !delegated) return false;
 
   const task = await prisma.task.findFirst({
     where: {
@@ -210,6 +317,7 @@ export async function canUpdateTaskExecution(user: CurrentUser, taskId: string) 
             },
           },
         },
+        ...(delegated ? [{ id: taskId }] : []),
       ],
     },
     select: { id: true },

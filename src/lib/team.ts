@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 export const confirmedTeamStatuses: TeamRelationStatus[] = ["confirmed", "admin_confirmed"];
 const cycleBlockingStatuses: TeamRelationStatus[] = ["pending", "confirmed", "admin_confirmed"];
+export const directManagerBlockingStatuses: TeamRelationStatus[] = ["pending", "confirmed", "admin_confirmed"];
 
 export async function getDownlineUserIds(
   managerId: string,
@@ -78,6 +79,59 @@ export async function wouldCreateTeamCycle(managerId: string, reportId: string, 
   return reportDownline.includes(managerId);
 }
 
+export async function findBlockingDirectManager(reportId: string, excludeRelationId?: string) {
+  return prisma.teamRelation.findFirst({
+    where: {
+      reportId,
+      status: { in: directManagerBlockingStatuses },
+      id: excludeRelationId ? { not: excludeRelationId } : undefined,
+    },
+    select: {
+      id: true,
+      managerId: true,
+      status: true,
+      manager: { select: { id: true, username: true, displayName: true } },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+}
+
+export async function getActiveDelegationsForAssistant(assistantId: string, db: Pick<PrismaClientLike, "teamDelegation"> = prisma) {
+  const delegations = await db.teamDelegation.findMany({
+    where: { assistantId, active: true },
+    select: { managerId: true, projectId: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+
+  return delegations;
+}
+
+export async function getDelegatedManagerIds(assistantId: string, db: Pick<PrismaClientLike, "teamDelegation"> = prisma) {
+  const delegations = await getActiveDelegationsForAssistant(assistantId, db);
+  return Array.from(new Set(delegations.map((delegation) => delegation.managerId)));
+}
+
+export async function getDelegatedProjectIds(assistantId: string, db: Pick<PrismaClientLike, "teamDelegation"> = prisma) {
+  const delegations = await getActiveDelegationsForAssistant(assistantId, db);
+  return Array.from(new Set(delegations.map((delegation) => delegation.projectId)));
+}
+
+export async function hasActiveDelegation(
+  managerId: string,
+  assistantId: string,
+  projectId: string,
+  db: Pick<PrismaClientLike, "teamDelegation"> = prisma,
+) {
+  if (managerId === assistantId) return false;
+  const delegation = await db.teamDelegation.findFirst({
+    where: { managerId, assistantId, projectId, active: true },
+    select: { id: true },
+  });
+  return Boolean(delegation);
+}
+
 export function activeRelationWhere(): Prisma.TeamRelationWhereInput {
   return { status: { in: confirmedTeamStatuses } };
 }
+
+type PrismaClientLike = typeof prisma;

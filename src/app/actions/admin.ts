@@ -279,12 +279,14 @@ export async function runExportAction(formData: FormData) {
       history: {
         include: {
           user: { select: { username: true, displayName: true } },
+          onBehalfOf: { select: { username: true, displayName: true } },
         },
         orderBy: { createdAt: "asc" },
       },
       approvals: {
         include: {
           reviewer: { select: { username: true, displayName: true } },
+          delegatedFor: { select: { username: true, displayName: true } },
         },
         orderBy: [{ type: "asc" }, { round: "asc" }, { level: "asc" }],
       },
@@ -312,6 +314,7 @@ export async function runExportAction(formData: FormData) {
           dashboardSections: await prisma.dashboardSectionPreference.findMany({ orderBy: [{ ownerId: "asc" }, { sortOrder: "asc" }] }),
           kanbanColumns: await prisma.kanbanColumnPreference.findMany({ orderBy: [{ ownerId: "asc" }, { sortOrder: "asc" }, { columnKey: "asc" }] }),
           teamRelations: await prisma.teamRelation.findMany({ orderBy: [{ managerId: "asc" }, { reportId: "asc" }] }),
+          teamDelegations: await prisma.teamDelegation.findMany({ orderBy: [{ projectId: "asc" }, { managerId: "asc" }, { assistantId: "asc" }] }),
           taskApprovals: await prisma.taskApproval.findMany({ orderBy: [{ taskId: "asc" }, { type: "asc" }, { round: "asc" }, { level: "asc" }] }),
           tasks,
         });

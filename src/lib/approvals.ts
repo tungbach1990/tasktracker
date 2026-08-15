@@ -19,6 +19,13 @@ type ChainUser = {
   displayName: string;
 };
 
+type ApprovalReviewer = {
+  reviewer: ChainUser;
+  delegatedFor: ChainUser | null;
+  status: "pending" | "skipped";
+  note: string;
+};
+
 export async function getManagerChain(userId: string, db: Db = prisma) {
   const chain: ChainUser[] = [];
   const visited = new Set<string>([userId]);
@@ -45,6 +52,29 @@ export async function getManagerChain(userId: string, db: Db = prisma) {
   }
 
   return chain;
+}
+
+async function getActiveAssistantReviewers(managerId: string, projectId: string, db: Db = prisma) {
+  const delegations = await db.teamDelegation.findMany({
+    where: { managerId, projectId, active: true },
+    include: {
+      assistant: {
+        select: { id: true, username: true, displayName: true },
+      },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+
+  return delegations.map((delegation) => delegation.assistant);
+}
+
+async function hasActiveDelegationInDb(managerId: string, assistantId: string, projectId: string, db: Db = prisma) {
+  const delegation = await db.teamDelegation.findFirst({
+    where: { managerId, assistantId, projectId, active: true },
+    select: { id: true },
+  });
+
+  return Boolean(delegation);
 }
 
 export async function userHasDbPermission(userId: string, permissionKey: string, db: Db = prisma) {
@@ -100,11 +130,51 @@ async function nextRound(taskId: string, type: TaskApprovalType, db: Db) {
   return (aggregate._max.round ?? 0) + 1;
 }
 
-export async function startRegistrationApproval(taskId: string, performerId: string, actorId: string, db: Db = prisma) {
-  const chain = await getManagerChain(performerId, db);
+async function buildApprovalReviewers(userId: string, type: TaskApprovalType, projectId: string, db: Db) {
+  const chain = await getManagerChain(userId, db);
+  const regularReviewerIds = new Set(chain.map((reviewer) => reviewer.id));
+  const insertedDelegations = new Set<string>();
+  const reviewers: ApprovalReviewer[] = [];
+
+  for (const manager of chain) {
+    const managerCanApproveCompletion = type !== "completion" || (await userHasDbPermission(manager.id, "task.done.approve", db));
+    const assistants = managerCanApproveCompletion ? await getActiveAssistantReviewers(manager.id, projectId, db) : [];
+
+    for (const assistant of assistants) {
+      const key = `${manager.id}:${assistant.id}`;
+      if (assistant.id === manager.id || regularReviewerIds.has(assistant.id) || insertedDelegations.has(key)) continue;
+      insertedDelegations.add(key);
+      reviewers.push({
+        reviewer: assistant,
+        delegatedFor: manager,
+        status: "pending",
+        note: "",
+      });
+    }
+
+    reviewers.push({
+      reviewer: manager,
+      delegatedFor: null,
+      status: managerCanApproveCompletion ? "pending" : "skipped",
+      note: managerCanApproveCompletion ? "" : "Skipped: missing task.done.approve",
+    });
+  }
+
+  return reviewers;
+}
+
+export async function startRegistrationApproval(
+  taskId: string,
+  performerId: string,
+  projectId: string,
+  actorId: string,
+  onBehalfOfId: string | null = null,
+  db: Db = prisma,
+) {
+  const reviewers = await buildApprovalReviewers(performerId, "registration", projectId, db);
   const round = await nextRound(taskId, "registration", db);
 
-  if (chain.length === 0) {
+  if (reviewers.length === 0) {
     await db.task.update({
       where: { id: taskId },
       data: {
@@ -113,6 +183,7 @@ export async function startRegistrationApproval(taskId: string, performerId: str
           create: {
             action: "registration_auto_approved",
             userId: actorId,
+            onBehalfOfId,
             after: { performerId, round },
           },
         },
@@ -121,28 +192,31 @@ export async function startRegistrationApproval(taskId: string, performerId: str
     return { round, pendingCount: 0 };
   }
 
-  for (const [index, reviewer] of chain.entries()) {
+  for (const [index, item] of reviewers.entries()) {
     await db.taskApproval.create({
       data: {
         taskId,
         type: "registration",
         round,
         level: index + 1,
-        reviewerId: reviewer.id,
+        reviewerId: item.reviewer.id,
+        delegatedForId: item.delegatedFor?.id ?? null,
       },
     });
   }
 
-  return { round, pendingCount: chain.length };
+  return { round, pendingCount: reviewers.length };
 }
 
 export async function startCompletionApproval(
   task: Pick<Task, "id" | "statusId" | "createdById" | "performerId" | "workflowStatus">,
   actorId: string,
   doneStatusId: string,
+  projectId: string,
+  onBehalfOfId: string | null = null,
   db: Db = prisma,
 ) {
-  const chain = await getManagerChain(task.performerId, db);
+  const reviewers = await buildApprovalReviewers(task.performerId, "completion", projectId, db);
   const round = await nextRound(task.id, "completion", db);
   let pendingCount = 0;
 
@@ -157,6 +231,7 @@ export async function startCompletionApproval(
         create: {
           action: "completion_submitted",
           userId: actorId,
+          onBehalfOfId,
           before: { statusId: task.statusId, workflowStatus: task.workflowStatus },
           after: { statusId: doneStatusId, workflowStatus: "pending_completion", round },
         },
@@ -164,19 +239,19 @@ export async function startCompletionApproval(
     },
   });
 
-  for (const [index, reviewer] of chain.entries()) {
-    const canApprove = await userHasDbPermission(reviewer.id, "task.done.approve", db);
-    if (canApprove) pendingCount += 1;
+  for (const [index, item] of reviewers.entries()) {
+    if (item.status === "pending") pendingCount += 1;
     await db.taskApproval.create({
       data: {
         taskId: task.id,
         type: "completion",
         round,
         level: index + 1,
-        reviewerId: reviewer.id,
-        status: canApprove ? "pending" : "skipped",
-        note: canApprove ? "" : "Skipped: missing task.done.approve",
-        actedAt: canApprove ? null : new Date(),
+        reviewerId: item.reviewer.id,
+        delegatedForId: item.delegatedFor?.id ?? null,
+        status: item.status,
+        note: item.note,
+        actedAt: item.status === "pending" ? null : new Date(),
       },
     });
   }
@@ -192,6 +267,7 @@ export async function startCompletionApproval(
           create: {
             action: "completion_auto_approved",
             userId: actorId,
+            onBehalfOfId,
             after: { round },
           },
         },
@@ -217,12 +293,19 @@ export async function isCurrentApproval(approval: Pick<TaskApproval, "id" | "tas
 }
 
 export async function canActOnApprovalForUser(
-  approval: Pick<TaskApproval, "id" | "taskId" | "type" | "round" | "level" | "status" | "reviewerId">,
+  approval: Pick<TaskApproval, "id" | "taskId" | "type" | "round" | "level" | "status" | "reviewerId" | "delegatedForId">,
   actorId: string,
   db: Db = prisma,
 ) {
   if (approval.status !== "pending") return false;
   if (approval.reviewerId !== actorId) return false;
+  if (approval.delegatedForId) {
+    const task = await db.task.findUnique({
+      where: { id: approval.taskId },
+      select: { projectId: true },
+    });
+    return task ? hasActiveDelegationInDb(approval.delegatedForId, actorId, task.projectId, db) : false;
+  }
   if (approval.type !== "completion") return true;
 
   return userHasDbPermission(actorId, "task.done.approve", db);
@@ -240,6 +323,7 @@ export async function getCurrentApprovalForReviewer(approvalId: string, reviewer
 export async function finalizeApprovalIfComplete(
   approval: Pick<TaskApproval, "taskId" | "type" | "round">,
   actorId: string,
+  onBehalfOfId: string | null = null,
   db: Db = prisma,
 ) {
   const remaining = await db.taskApproval.count({
@@ -262,6 +346,7 @@ export async function finalizeApprovalIfComplete(
           create: {
             action: "registration_approved_final",
             userId: actorId,
+            onBehalfOfId,
             after: { round: approval.round },
           },
         },
@@ -280,6 +365,7 @@ export async function finalizeApprovalIfComplete(
         create: {
           action: "completion_approved_final",
           userId: actorId,
+          onBehalfOfId,
           after: { round: approval.round },
         },
       },
@@ -296,6 +382,7 @@ export async function getApprovalQueueForUser(userId: string, db: Db = prisma) {
     },
     include: {
       reviewer: { select: { id: true, username: true, displayName: true } },
+      delegatedFor: { select: { id: true, username: true, displayName: true } },
       task: {
         include: {
           project: true,
@@ -336,6 +423,7 @@ export async function getApprovalQueueCountForUser(userId: string, db: Db = pris
       level: true,
       status: true,
       reviewerId: true,
+      delegatedForId: true,
     },
   });
 

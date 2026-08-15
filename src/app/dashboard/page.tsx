@@ -274,6 +274,11 @@ function ApprovalSection({ approvals }: { approvals: Awaited<ReturnType<typeof g
                 <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
                   <span>{approval.type === "registration" ? "Duyệt đăng ký" : "Duyệt hoàn thành"}</span>
                   <span>Cấp {approval.level}</span>
+                  {approval.delegatedFor ? (
+                    <span className="font-medium text-amber-700">
+                      Trợ lý cho {approval.delegatedFor.displayName || approval.delegatedFor.username}
+                    </span>
+                  ) : null}
                   <PriorityBadge priority={approval.task.priority} />
                   <span>Người duyệt: {approval.reviewer.displayName || approval.reviewer.username}</span>
                   <span>Dự án: {approval.task.project.name}</span>

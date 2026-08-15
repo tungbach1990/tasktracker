@@ -114,6 +114,17 @@ export const teamRelationFormSchema = z.object({
   status: z.enum(["pending", "confirmed", "rejected", "admin_confirmed"]),
 });
 
+export const transferDirectReportFormSchema = z.object({
+  managerId: z.string().min(1),
+  reportId: z.string().min(1),
+});
+
+export const teamDelegationFormSchema = z.object({
+  managerId: z.string().min(1),
+  assistantId: z.string().min(1),
+  projectId: z.string().min(1),
+});
+
 export function optionalDate(value: string) {
   if (!value) return null;
   const date = new Date(`${value}T00:00:00.000Z`);

@@ -105,11 +105,16 @@ model User {
   performedTasks Task[]        @relation("TaskPerformedBy")
   comments       TaskComment[]
   taskHistory    TaskHistory[]
+  taskHistoryOnBehalfOf TaskHistory[] @relation("TaskHistoryOnBehalfOf")
   taskApprovals  TaskApproval[] @relation("TaskApprovalReviewer")
+  delegatedApprovals TaskApproval[] @relation("TaskApprovalDelegatedFor")
   exportJobs     ExportJob[]
   teamReports    TeamRelation[] @relation("TeamManager")
   teamManagers   TeamRelation[] @relation("TeamReport")
   createdTeamRelations TeamRelation[] @relation("TeamRelationCreatedBy")
+  assistantDelegations TeamDelegation[] @relation("TeamDelegationAssistant")
+  managerDelegations TeamDelegation[] @relation("TeamDelegationManager")
+  createdDelegations TeamDelegation[] @relation("TeamDelegationCreatedBy")
 
   @@index([currentProjectId])
 }
@@ -169,6 +174,7 @@ model Project {
   members UserProject[]
   currentForUsers User[] @relation("CurrentProject")
   employees EmployeeProject[]
+  teamDelegations TeamDelegation[]
 
   @@unique([key])
   @@index([active, name])
@@ -348,13 +354,16 @@ model TaskApproval {
 
   taskId     String
   reviewerId String
+  delegatedForId String?
 
   task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
   reviewer User @relation("TaskApprovalReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+  delegatedFor User? @relation("TaskApprovalDelegatedFor", fields: [delegatedForId], references: [id], onDelete: SetNull)
 
   @@index([taskId, type, round, level])
   @@index([reviewerId, status])
   @@index([taskId, type, status])
+  @@index([delegatedForId])
 }
 
 model TaskEmployee {
@@ -389,6 +398,29 @@ model TeamRelation {
   @@index([sourceEmployeeId])
 }
 
+model TeamDelegation {
+  id        String   @id @default(cuid())
+  active    Boolean  @default(true)
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  managerId   String
+  assistantId String
+  projectId   String
+  createdById String
+
+  manager   User @relation("TeamDelegationManager", fields: [managerId], references: [id], onDelete: Cascade)
+  assistant User @relation("TeamDelegationAssistant", fields: [assistantId], references: [id], onDelete: Cascade)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User @relation("TeamDelegationCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@unique([managerId, assistantId, projectId])
+  @@index([assistantId, active])
+  @@index([managerId, active])
+  @@index([projectId, active])
+}
+
 model TaskComment {
   id        String   @id @default(cuid())
   body      String
@@ -410,9 +442,13 @@ model TaskHistory {
 
   taskId String
   userId String
+  onBehalfOfId String?
 
   task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id])
+  onBehalfOf User? @relation("TaskHistoryOnBehalfOf", fields: [onBehalfOfId], references: [id], onDelete: SetNull)
+
+  @@index([onBehalfOfId])
 }
 
 model ExportJob {

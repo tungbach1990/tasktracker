@@ -35,6 +35,11 @@ export default async function ApprovalsPage() {
                   <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
                     <span>{approval.type === "registration" ? "Duyệt đăng ký" : "Duyệt hoàn thành"}</span>
                     <span>Cấp {approval.level}</span>
+                    {approval.delegatedFor ? (
+                      <span className="font-medium text-amber-700">
+                        Trợ lý cho {approval.delegatedFor.displayName || approval.delegatedFor.username}
+                      </span>
+                    ) : null}
                     <PriorityBadge priority={approval.task.priority} />
                     <span>Dự án: {approval.task.project.name}</span>
                     <span>Hạn: {shortDate(approval.task.dueDate)}</span>

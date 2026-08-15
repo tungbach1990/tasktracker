@@ -8,10 +8,12 @@ import {
   finalizeApprovalIfComplete,
   firstOpenStatusId,
   getCurrentApprovalForReviewer,
+  getManagerChain,
   startCompletionApproval,
   startRegistrationApproval,
 } from "@/lib/approvals";
 import {
+  canActAsDelegatedManager,
   canDeleteTask,
   canEditTask,
   canUpdateTaskExecution,
@@ -89,33 +91,132 @@ async function currentProjectIdForUser(userId: string) {
   return project.id;
 }
 
-async function projectIdForCreate(user: CurrentUser, submittedProjectId: string) {
-  if ((hasPermission(user, "task.view.all") || hasPermission(user, "project.manage")) && submittedProjectId) {
-    return submittedProjectId;
-  }
-
-  return currentProjectIdForUser(user.id);
-}
-
 function projectIdForUpdate(user: CurrentUser, submittedProjectId: string, previousProjectId: string) {
   return (hasPermission(user, "task.view.all") || hasPermission(user, "project.manage")) && submittedProjectId
     ? submittedProjectId
     : previousProjectId;
 }
 
-async function employeeIdsForCreate(user: CurrentUser, submittedEmployeeIds: string[]) {
-  if (submittedEmployeeIds.length > 0 || hasPermission(user, "task.view.all")) {
-    return submittedEmployeeIds;
-  }
-
-  const selfEmployee = await ensureSelfEmployee(prisma, user.id);
-  return [selfEmployee.id];
-}
-
 async function employeeIdsForOwner(ownerId: string, submittedEmployeeIds: string[]) {
   if (submittedEmployeeIds.length > 0) return submittedEmployeeIds;
   const selfEmployee = await ensureSelfEmployee(prisma, ownerId);
   return [selfEmployee.id];
+}
+
+async function activeProjectIdForSubmitted(user: CurrentUser, submittedProjectId: string) {
+  const projectId = submittedProjectId || (await currentProjectIdForUser(user.id));
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, active: true },
+    select: { id: true },
+  });
+  if (!project) redirect("/tasks");
+  return project.id;
+}
+
+async function ensureEmployeeProject(employeeId: string, projectId: string) {
+  await prisma.employeeProject.upsert({
+    where: { employeeId_projectId: { employeeId, projectId } },
+    update: {},
+    create: { employeeId, projectId },
+  });
+}
+
+async function canUseProjectForOwnCreate(user: CurrentUser, projectId: string) {
+  if (hasPermission(user, "task.view.all") || hasPermission(user, "project.manage")) return true;
+  if (user.currentProjectId === projectId) return true;
+
+  const delegation = await prisma.teamDelegation.findFirst({
+    where: { assistantId: user.id, projectId, active: true },
+    select: { id: true },
+  });
+  return Boolean(delegation);
+}
+
+async function assertEmployeesAssignableByActor(
+  user: CurrentUser,
+  ownerId: string,
+  employees: Array<{ id: string; key: string; linkedUserId: string | null }>,
+) {
+  if (hasPermission(user, "task.view.all") || hasPermission(user, "team.manage.all")) return;
+
+  const managerChain = await getManagerChain(user.id);
+  const managerIds = new Set(managerChain.map((manager) => manager.id));
+  const hasForbiddenManager = employees.some((employee) => employee.linkedUserId && managerIds.has(employee.linkedUserId));
+  const hasDelegatedManagerSelf =
+    ownerId !== user.id &&
+    employees.some((employee) => employee.key === "self" && employee.linkedUserId === ownerId);
+
+  if (hasForbiddenManager || hasDelegatedManagerSelf) redirect("/tasks");
+}
+
+async function assertEmployeeIdsAssignableByActor(user: CurrentUser, ownerId: string, employeeIds: string[]) {
+  if (employeeIds.length === 0) return;
+  const employees = await prisma.employee.findMany({
+    where: { id: { in: employeeIds }, ownerId, active: true },
+    select: { id: true, key: true, linkedUserId: true },
+  });
+  if (employees.length !== new Set(employeeIds).size) redirect("/tasks");
+  await assertEmployeesAssignableByActor(user, ownerId, employees);
+}
+
+async function resolveCreateContext(user: CurrentUser, data: TaskPayload) {
+  const projectId = await activeProjectIdForSubmitted(user, data.projectId);
+
+  if (data.employeeIds.length === 0) {
+    if (!hasPermission(user, "task.create") || !(await canUseProjectForOwnCreate(user, projectId))) {
+      redirect("/dashboard");
+    }
+    const selfEmployee = await ensureSelfEmployee(prisma, user.id);
+    await ensureEmployeeProject(selfEmployee.id, projectId);
+    return {
+      ownerId: user.id,
+      projectId,
+      employeeIds: [selfEmployee.id],
+      onBehalfOfId: null as string | null,
+    };
+  }
+
+  const uniqueEmployeeIds = Array.from(new Set(data.employeeIds));
+  const employees = await prisma.employee.findMany({
+    where: { id: { in: uniqueEmployeeIds }, active: true },
+    select: {
+      id: true,
+      key: true,
+      ownerId: true,
+      linkedUserId: true,
+      projects: { where: { projectId }, select: { projectId: true } },
+    },
+    orderBy: [{ ownerId: "asc" }, { name: "asc" }, { id: "asc" }],
+  });
+  if (employees.length !== uniqueEmployeeIds.length || employees.some((employee) => employee.projects.length === 0)) {
+    redirect("/tasks");
+  }
+
+  const ownerIds = Array.from(new Set(employees.map((employee) => employee.ownerId)));
+  if (ownerIds.length !== 1) redirect("/tasks");
+  const ownerId = ownerIds[0];
+
+  if (ownerId === user.id) {
+    if (!hasPermission(user, "task.create")) redirect("/dashboard");
+  } else if (
+    !hasPermission(user, "task.view.all") &&
+    !hasPermission(user, "team.manage.all") &&
+    !(await canActAsDelegatedManager(user.id, ownerId, projectId))
+  ) {
+    redirect("/dashboard");
+  }
+
+  await assertEmployeesAssignableByActor(user, ownerId, employees);
+
+  return {
+    ownerId,
+    projectId,
+    employeeIds: uniqueEmployeeIds,
+    onBehalfOfId:
+      ownerId !== user.id && (await canActAsDelegatedManager(user.id, ownerId, projectId))
+        ? ownerId
+        : null,
+  };
 }
 
 async function performerIdFromEmployees(
@@ -242,6 +343,7 @@ async function submitTaskForCompletion(taskId: string, actorId: string, requeste
   if (task.workflowStatus !== "active") return;
 
   const ownerId = taskOwnerId(task);
+  const onBehalfOfId = await onBehalfOfIdForActor(actorId, ownerId, task.projectId);
   const doneStatusId = requestedDoneStatusId || (task.status.done ? task.statusId : (await firstStatusByDone(ownerId, true))?.id);
   if (!doneStatusId) redirect(`/tasks/${taskId}`);
   await assertTaskCanUseDoneStatus(taskId, true);
@@ -258,6 +360,7 @@ async function submitTaskForCompletion(taskId: string, actorId: string, requeste
           create: {
             action: "completed_leaf_task",
             userId: actorId,
+            onBehalfOfId,
             before: { statusId: task.statusId, workflowStatus: task.workflowStatus },
             after: { statusId: doneStatusId, workflowStatus: "final_done" },
           },
@@ -277,6 +380,8 @@ async function submitTaskForCompletion(taskId: string, actorId: string, requeste
     },
     actorId,
     doneStatusId,
+    task.projectId,
+    onBehalfOfId,
   );
 }
 
@@ -287,6 +392,7 @@ async function syncParentCompletion(parentId: string | null | undefined, actorId
     where: { id: parentId },
     include: {
       status: true,
+      project: { select: { id: true } },
       children: { where: { deletedAt: null }, select: { id: true, workflowStatus: true } },
     },
   });
@@ -308,6 +414,7 @@ async function syncParentCompletion(parentId: string | null | undefined, actorId
   ) {
     const openStatus = await firstStatusByDone(taskOwnerId(parent), false);
     if (!openStatus) return;
+    const onBehalfOfId = await onBehalfOfIdForActor(actorId, taskOwnerId(parent), parent.project.id);
 
     await cancelPendingCompletionApprovals(parent.id, "Hủy duyệt hoàn thành vì nhiệm vụ con đã mở lại");
     await prisma.task.update({
@@ -321,6 +428,7 @@ async function syncParentCompletion(parentId: string | null | undefined, actorId
           create: {
             action: "auto_reopened_from_child",
             userId: actorId,
+            onBehalfOfId,
             before: { statusId: parent.statusId, workflowStatus: parent.workflowStatus },
             after: { statusId: openStatus.id, workflowStatus: "active" },
           },
@@ -371,6 +479,11 @@ async function defaultOpenStatusId(ownerId: string) {
   return status.id;
 }
 
+async function onBehalfOfIdForActor(actorId: string, ownerId: string, projectId: string) {
+  if (actorId === ownerId) return null;
+  return (await canActAsDelegatedManager(actorId, ownerId, projectId)) ? ownerId : null;
+}
+
 function revalidateTaskViews(taskId: string, parentId?: string | null) {
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
@@ -383,16 +496,13 @@ function revalidateTaskViews(taskId: string, parentId?: string | null) {
 
 export async function createTaskAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.create")) redirect("/dashboard");
-
   const data = taskPayload(formData);
-  const projectId = await projectIdForCreate(user, data.projectId);
-  const employeeIds = await employeeIdsForCreate(user, data.employeeIds);
-  const { status } = await validateUserSettingsSelection(user.id, data, projectId, employeeIds);
-  const performerId = await performerIdFromEmployees(user.id, data.kind, employeeIds, user.id);
+  const { ownerId, projectId, employeeIds, onBehalfOfId } = await resolveCreateContext(user, data);
+  const { status } = await validateUserSettingsSelection(ownerId, data, projectId, employeeIds);
+  const performerId = await performerIdFromEmployees(ownerId, data.kind, employeeIds, ownerId);
   const createStatusId =
     data.kind === "self_registered" && status.done
-      ? await defaultOpenStatusId(user.id)
+      ? await defaultOpenStatusId(ownerId)
       : data.statusId;
 
   const task = await prisma.task.create({
@@ -414,7 +524,7 @@ export async function createTaskAction(formData: FormData) {
       ...recurrencePayload(data),
       completedAt: null,
       performerId,
-      ownerId: user.id,
+      ownerId,
       createdById: user.id,
       updatedById: user.id,
       employees: {
@@ -427,12 +537,14 @@ export async function createTaskAction(formData: FormData) {
         create: {
           action: "created",
           userId: user.id,
+          onBehalfOfId,
           after: {
             title: data.title,
             statusId: createStatusId,
             priority: data.priority,
             kind: data.kind,
             performerId,
+            ownerId,
             repeats: data.repeats,
             employeeIds,
           },
@@ -442,7 +554,7 @@ export async function createTaskAction(formData: FormData) {
   });
 
   if (data.kind === "self_registered") {
-    await startRegistrationApproval(task.id, performerId, user.id);
+    await startRegistrationApproval(task.id, performerId, projectId, user.id, onBehalfOfId);
   } else if (status.done) {
     await submitTaskForCompletion(task.id, user.id, createStatusId);
   }
@@ -453,7 +565,6 @@ export async function createTaskAction(formData: FormData) {
 
 export async function createChildTaskAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.create")) redirect("/dashboard");
 
   const data = childTaskPayload(formData);
   const allowed = await canViewTask(user, data.parentId);
@@ -466,12 +577,15 @@ export async function createChildTaskAction(formData: FormData) {
     },
   });
   const ownerId = taskOwnerId(parent);
-  if (ownerId !== user.id && !hasPermission(user, "task.view.all")) redirect(`/tasks/${parent.id}`);
+  const onBehalfOfId = await onBehalfOfIdForActor(user.id, ownerId, parent.projectId);
+  if (!hasPermission(user, "task.create") && !onBehalfOfId) redirect("/dashboard");
+  if (ownerId !== user.id && !hasPermission(user, "task.view.all") && !onBehalfOfId) redirect(`/tasks/${parent.id}`);
 
   const dueDate = optionalDate(data.dueDate);
   if (dueDate && parent.dueDate && dueDate > parent.dueDate) redirect(`/tasks/${parent.id}`);
 
   const employeeIds = await employeeIdsForOwner(ownerId, data.employeeIds);
+  await assertEmployeeIdsAssignableByActor(user, ownerId, employeeIds);
   const { status } = await validateUserSettingsSelection(ownerId, data, parent.projectId, employeeIds, {
     requireActiveProject: false,
   });
@@ -502,7 +616,7 @@ export async function createChildTaskAction(formData: FormData) {
       completedAt: null,
       performerId,
       ownerId,
-      createdById: parent.createdById,
+      createdById: user.id,
       updatedById: user.id,
       employees: {
         createMany: {
@@ -514,6 +628,7 @@ export async function createChildTaskAction(formData: FormData) {
         create: {
           action: "child_created",
           userId: user.id,
+          onBehalfOfId,
           after: {
             parentId: parent.id,
             title: data.title,
@@ -537,7 +652,6 @@ export async function createChildTaskAction(formData: FormData) {
 
 export async function updateTaskAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.update")) redirect("/dashboard");
 
   const taskId = idSchema.parse(formData.get("id"));
   const allowed = await canEditTask(user, taskId);
@@ -554,6 +668,8 @@ export async function updateTaskAction(formData: FormData) {
   const data = taskPayload(formData);
   const settingsOwnerId = taskOwnerId(previous);
   const projectId = projectIdForUpdate(user, data.projectId, previous.projectId);
+  const onBehalfOfId = await onBehalfOfIdForActor(user.id, settingsOwnerId, projectId);
+  await assertEmployeeIdsAssignableByActor(user, settingsOwnerId, data.employeeIds);
   const { status } = await validateUserSettingsSelection(settingsOwnerId, data, projectId, data.employeeIds, {
     requireActiveProject: projectId !== previous.projectId,
   });
@@ -604,6 +720,7 @@ export async function updateTaskAction(formData: FormData) {
       data: {
         taskId,
         userId: user.id,
+        onBehalfOfId,
         action: "updated",
         before: {
           title: previous.title,
@@ -649,7 +766,6 @@ export async function updateTaskAction(formData: FormData) {
 
 export async function changeTaskStatusAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.update")) redirect("/dashboard");
 
   const taskId = idSchema.parse(formData.get("id"));
   const statusId = idSchema.parse(formData.get("statusId"));
@@ -658,6 +774,7 @@ export async function changeTaskStatusAction(formData: FormData) {
 
   const previous = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
   const ownerId = taskOwnerId(previous);
+  const onBehalfOfId = await onBehalfOfIdForActor(user.id, ownerId, previous.projectId);
   const status = await prisma.taskStatusOption.findFirst({
     where: { id: statusId, ownerId, active: true },
   });
@@ -690,6 +807,7 @@ export async function changeTaskStatusAction(formData: FormData) {
         create: {
           action: "status_changed",
           userId: user.id,
+          onBehalfOfId,
           before: { statusId: previous.statusId },
           after: { statusId },
         },
@@ -703,7 +821,6 @@ export async function changeTaskStatusAction(formData: FormData) {
 
 export async function moveTaskToKanbanColumnAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.update")) redirect("/dashboard");
 
   const taskId = idSchema.parse(formData.get("id"));
   const columnKey = String(formData.get("columnKey") || "");
@@ -715,6 +832,7 @@ export async function moveTaskToKanbanColumnAction(formData: FormData) {
 
   const previous = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
   const ownerId = taskOwnerId(previous);
+  const onBehalfOfId = await onBehalfOfIdForActor(user.id, ownerId, previous.projectId);
   const status = await prisma.taskStatusOption.findFirst({
     where: { ownerId, key: statusKey, active: true },
   });
@@ -750,6 +868,7 @@ export async function moveTaskToKanbanColumnAction(formData: FormData) {
         create: {
           action: "kanban_moved",
           userId: user.id,
+          onBehalfOfId,
           before: { statusId: previous.statusId, workflowStatus: previous.workflowStatus },
           after: { statusId: status.id, statusKey, workflowStatus: "active" },
         },
@@ -763,7 +882,6 @@ export async function moveTaskToKanbanColumnAction(formData: FormData) {
 
 export async function markTaskDoneAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.update")) redirect("/dashboard");
 
   const taskId = idSchema.parse(formData.get("id"));
   const allowed = await canUpdateTaskExecution(user, taskId);
@@ -794,7 +912,6 @@ export async function markTaskDoneAction(formData: FormData) {
 
 export async function reopenTaskAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.update")) redirect("/dashboard");
 
   const taskId = idSchema.parse(formData.get("id"));
   const allowed = await canUpdateTaskExecution(user, taskId);
@@ -817,6 +934,7 @@ export async function reopenTaskAction(formData: FormData) {
 
   const openStatus = await firstStatusByDone(taskOwnerId(previous), false);
   if (!openStatus) redirect(`/tasks/${taskId}`);
+  const onBehalfOfId = await onBehalfOfIdForActor(user.id, taskOwnerId(previous), previous.projectId);
 
   await prisma.$transaction([
     prisma.taskApproval.updateMany({
@@ -838,6 +956,7 @@ export async function reopenTaskAction(formData: FormData) {
           create: {
             action: "reopened",
             userId: user.id,
+            onBehalfOfId,
             before: {
               statusId: previous.statusId,
               workflowStatus: previous.workflowStatus,
@@ -888,7 +1007,8 @@ export async function approveTaskApprovalAction(formData: FormData) {
   ]);
   if (ownUpdate.count !== 1) redirect("/dashboard");
 
-  const finalized = await finalizeApprovalIfComplete(approval, user.id);
+  const onBehalfOfId = approval.delegatedForId ?? null;
+  const finalized = await finalizeApprovalIfComplete(approval, user.id, onBehalfOfId);
   if (finalized && approval.type === "completion") {
     await syncParentCompletion(approval.task.parentId, user.id);
   }
@@ -903,6 +1023,7 @@ export async function rejectTaskApprovalAction(formData: FormData) {
   const approval = await getCurrentApprovalForReviewer(approvalId, user.id);
   if (!approval) redirect("/dashboard");
   if (!note) redirect(`/tasks/${approval.taskId}`);
+  const onBehalfOfId = approval.delegatedForId ?? null;
   const rejectionNote =
     approval.reviewerId === user.id
       ? note
@@ -942,6 +1063,7 @@ export async function rejectTaskApprovalAction(formData: FormData) {
           create: {
             action: "registration_rejected",
             userId: user.id,
+            onBehalfOfId,
             after: { round: approval.round, level: approval.level, note: rejectionNote },
           },
         },
@@ -961,6 +1083,7 @@ export async function rejectTaskApprovalAction(formData: FormData) {
           create: {
             action: "completion_rejected",
             userId: user.id,
+            onBehalfOfId,
             before: { statusId: approval.task.statusId, workflowStatus: approval.task.workflowStatus },
             after: { statusId: openStatusId, workflowStatus: "completion_rejected", round: approval.round, level: approval.level, note: rejectionNote },
           },
@@ -985,6 +1108,7 @@ export async function resubmitRegistrationAction(formData: FormData) {
       performerId: true,
       ownerId: true,
       createdById: true,
+      projectId: true,
       parentId: true,
     },
   });
@@ -1008,14 +1132,13 @@ export async function resubmitRegistrationAction(formData: FormData) {
       },
     },
   });
-  await startRegistrationApproval(taskId, task.performerId, user.id);
+  await startRegistrationApproval(taskId, task.performerId, task.projectId, user.id);
 
   revalidateTaskViews(taskId, task.parentId);
 }
 
 export async function updateTaskDueAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.update")) redirect("/dashboard");
 
   const taskId = idSchema.parse(formData.get("id"));
   const dueDate = optionalDate(String(formData.get("dueDate") || ""));
@@ -1028,6 +1151,7 @@ export async function updateTaskDueAction(formData: FormData) {
       parent: { select: { id: true, dueDate: true } },
     },
   });
+  const onBehalfOfId = await onBehalfOfIdForActor(user.id, taskOwnerId(previous), previous.projectId);
 
   if (dueDate && previous.parent?.dueDate && dueDate > previous.parent.dueDate) {
     redirect(`/tasks/${previous.parent.id}`);
@@ -1045,6 +1169,7 @@ export async function updateTaskDueAction(formData: FormData) {
         create: {
           action: "due_changed",
           userId: user.id,
+          onBehalfOfId,
           before: { dueDate: dateKey(previous.dueDate) },
           after: { dueDate: dateKey(dueDate) },
         },
@@ -1091,7 +1216,6 @@ export async function deleteTaskAction(formData: FormData) {
 
 export async function addCommentAction(formData: FormData) {
   const user = await requireActiveUser();
-  if (!hasPermission(user, "task.update")) redirect("/dashboard");
 
   const taskId = idSchema.parse(formData.get("id"));
   const body = String(formData.get("body") || "").trim();
@@ -1099,6 +1223,13 @@ export async function addCommentAction(formData: FormData) {
 
   const allowed = await canViewTask(user, taskId);
   if (!allowed) redirect("/dashboard");
+  const canUpdate = await canUpdateTaskExecution(user, taskId);
+  if (!canUpdate) redirect("/dashboard");
+  const task = await prisma.task.findUniqueOrThrow({
+    where: { id: taskId },
+    select: { ownerId: true, createdById: true, projectId: true },
+  });
+  const onBehalfOfId = await onBehalfOfIdForActor(user.id, taskOwnerId(task), task.projectId);
 
   await prisma.taskComment.create({
     data: {
@@ -1113,6 +1244,7 @@ export async function addCommentAction(formData: FormData) {
       taskId,
       userId: user.id,
       action: "commented",
+      onBehalfOfId,
       after: { body },
     },
   });

@@ -1,11 +1,11 @@
 import type { Prisma } from "@prisma/client";
 
-import { isTaskFinalDone } from "@/lib/approvals";
+import { getManagerChain, isTaskFinalDone } from "@/lib/approvals";
 import { hasPermission, taskAccessWhere, type CurrentUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { dashboardNumber, ensureUserSettings } from "@/lib/settings";
 import { compareOperationalPriority } from "@/lib/task-priority";
-import { getDownlineUserIds } from "@/lib/team";
+import { getDownlineUserIds, hasActiveDelegation } from "@/lib/team";
 
 export async function visibleTaskWhere(user: CurrentUser): Promise<Prisma.TaskWhereInput> {
   return taskAccessWhere(user);
@@ -154,19 +154,46 @@ export async function getDashboardData(user: CurrentUser) {
   };
 }
 
-export async function getTaskReferenceData(user: CurrentUser, excludeTaskId?: string, settingsOwnerId = user.id) {
-  const ownerId = settingsOwnerId === user.id || hasPermission(user, "task.view.all") ? settingsOwnerId : user.id;
+async function filterAssignableEmployeesForActor<
+  T extends { key: string; linkedUserId: string | null },
+>(
+  actor: CurrentUser,
+  ownerId: string,
+  employees: T[],
+) {
+  if (hasPermission(actor, "task.view.all") || hasPermission(actor, "team.manage.all")) {
+    return employees;
+  }
+
+  const managerChain = await getManagerChain(actor.id);
+  const forbiddenLinkedUserIds = new Set(managerChain.map((manager) => manager.id));
+
+  return employees.filter((employee) => {
+    if (employee.linkedUserId && forbiddenLinkedUserIds.has(employee.linkedUserId)) return false;
+    if (ownerId !== actor.id && employee.key === "self" && employee.linkedUserId === ownerId) return false;
+    return true;
+  });
+}
+
+async function taskReferenceDataForOwner(
+  ownerId: string,
+  canChooseProject: boolean,
+  excludeTaskId?: string,
+  projectIds?: string[],
+  actor?: CurrentUser,
+) {
   await ensureUserSettings(prisma, ownerId);
   const owner = await prisma.user.findUnique({
     where: { id: ownerId },
-    select: { currentProjectId: true },
+    select: { currentProjectId: true, displayName: true, username: true },
   });
-  const canChooseProject = hasPermission(user, "task.view.all") || hasPermission(user, "project.manage");
-  const projectWhere: Prisma.ProjectWhereInput = canChooseProject
-    ? { active: true }
-    : owner?.currentProjectId
-      ? { id: owner.currentProjectId, active: true }
-      : { active: true };
+  const projectWhere: Prisma.ProjectWhereInput = projectIds?.length
+    ? { id: { in: projectIds }, active: true }
+    : canChooseProject
+      ? { active: true }
+      : owner?.currentProjectId
+        ? { id: owner.currentProjectId, active: true }
+        : { active: true };
 
   const [projects, employees, statuses, parentTasks] = await Promise.all([
     prisma.project.findMany({
@@ -174,7 +201,11 @@ export async function getTaskReferenceData(user: CurrentUser, excludeTaskId?: st
       orderBy: { name: "asc" },
     }),
     prisma.employee.findMany({
-      where: { ownerId, active: true },
+      where: {
+        ownerId,
+        active: true,
+        projects: projectIds?.length ? { some: { projectId: { in: projectIds } } } : undefined,
+      },
       include: {
         linkedUser: { select: { id: true, username: true, displayName: true } },
         projects: {
@@ -203,7 +234,58 @@ export async function getTaskReferenceData(user: CurrentUser, excludeTaskId?: st
     }),
   ]);
 
-  return { projects, employees, statuses, parentTasks };
+  const visibleEmployees = actor
+    ? await filterAssignableEmployeesForActor(actor, ownerId, employees)
+    : employees;
+
+  return {
+    owner: owner
+      ? { id: ownerId, displayName: owner.displayName, username: owner.username }
+      : { id: ownerId, displayName: "", username: "" },
+    canChooseProject,
+    projects,
+    employees: visibleEmployees,
+    statuses,
+    parentTasks,
+  };
+}
+
+export async function getTaskReferenceData(user: CurrentUser, excludeTaskId?: string, settingsOwnerId = user.id, projectId?: string) {
+  const canUseRequestedOwner =
+    settingsOwnerId === user.id ||
+    hasPermission(user, "task.view.all") ||
+    hasPermission(user, "project.manage") ||
+    Boolean(projectId && (await hasActiveDelegation(settingsOwnerId, user.id, projectId)));
+  const ownerId = canUseRequestedOwner ? settingsOwnerId : user.id;
+  const canChooseProject = hasPermission(user, "task.view.all") || hasPermission(user, "project.manage");
+
+  return taskReferenceDataForOwner(ownerId, canChooseProject, excludeTaskId, !canChooseProject && projectId ? [projectId] : undefined, user);
+}
+
+export async function getTaskDelegationContexts(user: CurrentUser) {
+  const delegations = await prisma.teamDelegation.findMany({
+    where: { assistantId: user.id, active: true, project: { active: true } },
+    include: {
+      manager: { select: { id: true, username: true, displayName: true } },
+      project: true,
+    },
+    orderBy: [{ project: { name: "asc" } }, { manager: { displayName: "asc" } }, { manager: { username: "asc" } }],
+  });
+  if (delegations.length === 0) return [];
+
+  const contexts = [];
+  for (const delegation of delegations) {
+    const referenceData = await taskReferenceDataForOwner(delegation.managerId, false, undefined, [delegation.projectId], user);
+    contexts.push({
+      owner: delegation.manager,
+      canChooseProject: false,
+      projects: referenceData.projects,
+      employees: referenceData.employees,
+      statuses: referenceData.statuses,
+    });
+  }
+
+  return contexts;
 }
 
 export async function getSettingsData(userId: string) {

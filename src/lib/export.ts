@@ -13,6 +13,7 @@ import type {
   TaskEmployee,
   TaskHistory,
   TaskStatusOption,
+  TeamDelegation,
   TeamRelation,
   User,
   UserProject,
@@ -31,8 +32,18 @@ type TaskWithRelations = Task & {
   updatedBy: Pick<User, "username" | "displayName"> | null;
   employees: Array<TaskEmployee & { employee: Employee }>;
   comments: Array<TaskComment & { user: Pick<User, "username" | "displayName"> }>;
-  history: Array<TaskHistory & { user: Pick<User, "username" | "displayName"> }>;
-  approvals: Array<TaskApproval & { reviewer: Pick<User, "username" | "displayName"> }>;
+  history: Array<
+    TaskHistory & {
+      user: Pick<User, "username" | "displayName">;
+      onBehalfOf?: Pick<User, "username" | "displayName"> | null;
+    }
+  >;
+  approvals: Array<
+    TaskApproval & {
+      reviewer: Pick<User, "username" | "displayName">;
+      delegatedFor?: Pick<User, "username" | "displayName"> | null;
+    }
+  >;
 };
 
 export function buildMarkdownExport(tasks: TaskWithRelations[]) {
@@ -124,11 +135,24 @@ function appendTaskMarkdown(
     lines.push(`${detailIndent}- Phê duyệt:`);
     for (const approval of task.approvals) {
       const reviewer = approval.reviewer.displayName || approval.reviewer.username;
+      const delegatedFor = approval.delegatedFor
+        ? `, trợ lý cho ${approval.delegatedFor.displayName || approval.delegatedFor.username}`
+        : "";
       const actedAt = approval.actedAt ? approval.actedAt.toISOString() : "đang chờ";
       lines.push(
-        `${detailIndent}  - ${approval.type} vòng ${approval.round} cấp ${approval.level}: ${approval.status} bởi ${reviewer} (${actedAt})`,
+        `${detailIndent}  - ${approval.type} vòng ${approval.round} cấp ${approval.level}: ${approval.status} bởi ${reviewer}${delegatedFor} (${actedAt})`,
       );
       if (approval.note) lines.push(`${detailIndent}    - Ghi chú: ${approval.note.replace(/\r?\n/g, " ")}`);
+    }
+  }
+  if (task.history?.length) {
+    lines.push(`${detailIndent}- Lịch sử:`);
+    for (const event of task.history) {
+      const actor = event.user.displayName || event.user.username;
+      const onBehalfOf = event.onBehalfOf
+        ? `, làm thay ${event.onBehalfOf.displayName || event.onBehalfOf.username}`
+        : "";
+      lines.push(`${detailIndent}  - ${event.action}: ${actor}${onBehalfOf} (${event.createdAt.toISOString()})`);
     }
   }
 
@@ -168,6 +192,7 @@ type BackupPayload = {
   dashboardSections: DashboardSectionPreference[];
   kanbanColumns: KanbanColumnPreference[];
   teamRelations: TeamRelation[];
+  teamDelegations: TeamDelegation[];
   taskApprovals: TaskApproval[];
   tasks: TaskWithRelations[];
 };
