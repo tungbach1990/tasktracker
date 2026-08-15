@@ -1,0 +1,284 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import type { Employee, Project, Task, TaskEmployee, TaskStatusOption } from "@prisma/client";
+import { Save } from "lucide-react";
+
+import { createTaskAction, updateTaskAction } from "@/app/actions/tasks";
+import { priorities, repeatUnits, taskKinds } from "@/lib/constants";
+import { dateInputValue } from "@/lib/format";
+
+type EmployeeForForm = Employee & {
+  linkedUser?: { id: string; username: string; displayName: string } | null;
+  projects?: Array<{ projectId: string; project?: Project }>;
+};
+
+type TaskForForm =
+  | (Task & {
+      employees: TaskEmployee[];
+    })
+  | null;
+
+export function TaskForm({
+  task = null,
+  projects,
+  employees,
+  statuses,
+  canChooseProject = true,
+}: {
+  task?: TaskForForm;
+  projects: Project[];
+  employees: EmployeeForForm[];
+  statuses: TaskStatusOption[];
+  canChooseProject?: boolean;
+}) {
+  const action = task ? updateTaskAction : createTaskAction;
+  const selectedProject = projects.find((project) => project.id === task?.projectId) ?? projects[0];
+  const initialProjectId = task?.projectId ?? selectedProject?.id ?? "";
+  const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
+  const employeeIds = useMemo(
+    () => new Set(task?.employees.map((employee) => employee.employeeId) ?? []),
+    [task?.employees],
+  );
+  const visibleEmployees = useMemo(
+    () =>
+      employees.filter((employee) => {
+        const inSelectedProject = selectedProjectId
+          ? employee.projects?.some((scope) => scope.projectId === selectedProjectId)
+          : true;
+        return inSelectedProject || employeeIds.has(employee.id);
+      }),
+    [employees, employeeIds, selectedProjectId],
+  );
+
+  return (
+    <form action={action} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      {task ? <input type="hidden" name="id" value={task.id} /> : null}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <label className="block lg:col-span-2">
+          <span className="text-xs font-semibold uppercase text-slate-500">Tiêu đề</span>
+          <input
+            name="title"
+            required
+            defaultValue={task?.title ?? ""}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          />
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-semibold uppercase text-slate-500">Loại nghiệp vụ</span>
+          <select
+            name="kind"
+            defaultValue={task?.kind ?? "assigned"}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          >
+            {taskKinds.map((kind) => (
+              <option key={kind.value} value={kind.value}>
+                {kind.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {canChooseProject ? (
+          <label className="block">
+            <span className="text-xs font-semibold uppercase text-slate-500">Dự án</span>
+            <select
+              name="projectId"
+              required
+              value={selectedProjectId}
+              onChange={(event) => setSelectedProjectId(event.target.value)}
+              className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            >
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <div className="block">
+            <input type="hidden" name="projectId" value={selectedProjectId} />
+            <span className="text-xs font-semibold uppercase text-slate-500">Dự án</span>
+            <div className="mt-1 flex h-10 w-full items-center rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+              {selectedProject?.name ?? "Dự án hiện tại"}
+            </div>
+          </div>
+        )}
+
+        <label className="block">
+          <span className="text-xs font-semibold uppercase text-slate-500">Trạng thái</span>
+          <select
+            name="statusId"
+            defaultValue={task?.statusId ?? statuses[0]?.id}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          >
+            {statuses.map((status) => (
+              <option key={status.id} value={status.id}>
+                {status.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-semibold uppercase text-slate-500">Độ ưu tiên</span>
+          <select
+            name="priority"
+            defaultValue={task?.priority ?? "normal"}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          >
+            {priorities.map((priority) => (
+              <option key={priority.value} value={priority.value}>
+                {priority.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-semibold uppercase text-slate-500">Ngày bắt đầu</span>
+          <input
+            name="startDate"
+            type="date"
+            defaultValue={dateInputValue(task?.startDate)}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          />
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-semibold uppercase text-slate-500">Hạn hoàn thành</span>
+          <input
+            name="dueDate"
+            type="date"
+            defaultValue={dateInputValue(task?.dueDate)}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          />
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-semibold uppercase text-slate-500">Thứ tự</span>
+          <input
+            name="sortOrder"
+            type="number"
+            min={0}
+            max={10000}
+            defaultValue={task?.sortOrder ?? 100}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          />
+        </label>
+
+        <div className="rounded-md border border-slate-200 p-3 lg:col-span-2">
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input type="checkbox" name="repeats" defaultChecked={task?.repeats ?? false} className="size-4 rounded border-slate-300" />
+            Lặp lại nhiệm vụ
+          </label>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Mỗi</span>
+              <input
+                name="repeatEvery"
+                type="number"
+                min={1}
+                max={365}
+                defaultValue={task?.repeatEvery ?? 1}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Đơn vị</span>
+              <select
+                name="repeatUnit"
+                defaultValue={task?.repeatUnit ?? "day"}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              >
+                {repeatUnits.map((unit) => (
+                  <option key={unit.value} value={unit.value}>
+                    {unit.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Ngày lặp</span>
+              <input
+                name="occurrence"
+                type="date"
+                defaultValue={dateInputValue(task?.occurrence ?? task?.startDate ?? task?.dueDate)}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+          </div>
+        </div>
+
+        <TextAreaField name="description" label="Mô tả nhiệm vụ" value={task?.description ?? ""} />
+        <TextAreaField name="result" label="Kết quả thực hiện" value={task?.result ?? ""} />
+        <TextAreaField name="feedback" label="Phản hồi/cách làm" value={task?.feedback ?? ""} />
+      </div>
+
+      <div className="mt-4">
+        <div className="text-xs font-semibold uppercase text-slate-500">Người nhận việc</div>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {visibleEmployees.map((employee) => {
+            const outOfSelectedProject =
+              selectedProjectId &&
+              employeeIds.has(employee.id) &&
+              !employee.projects?.some((scope) => scope.projectId === selectedProjectId);
+
+            return (
+              <label
+                key={employee.id}
+                className="flex min-h-10 items-center gap-2 rounded-md border border-slate-200 px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                  name="employeeIds"
+                  value={employee.id}
+                  defaultChecked={employeeIds.has(employee.id)}
+                  className="size-4 rounded border-slate-300"
+                />
+                <span>
+                  {employee.name}
+                  {outOfSelectedProject ? (
+                    <span className="ml-1 text-xs text-amber-600">(ngoài dự án đang chọn)</span>
+                  ) : null}
+                </span>
+              </label>
+            );
+          })}
+          {visibleEmployees.length === 0 ? (
+            <div className="rounded-md border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-500">
+              Chưa có nhân sự trong dự án này. Tạo cấp dưới trong phần Đội nhóm.
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-5 flex justify-end">
+        <button
+          type="submit"
+          className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800"
+        >
+          <Save size={16} aria-hidden="true" />
+          Lưu nhiệm vụ
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function TextAreaField({ name, label, value }: { name: string; label: string; value: string }) {
+  return (
+    <label className="block lg:col-span-2">
+      <span className="text-xs font-semibold uppercase text-slate-500">{label}</span>
+      <textarea
+        name={name}
+        rows={4}
+        defaultValue={value}
+        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+      />
+    </label>
+  );
+}

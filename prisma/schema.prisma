@@ -1,0 +1,429 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TaskPriority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum TaskType {
+  big
+  small
+}
+
+enum TaskKind {
+  assigned
+  self_registered
+}
+
+enum TaskWorkflowStatus {
+  active
+  pending_registration
+  registration_rejected
+  pending_completion
+  final_done
+  completion_rejected
+}
+
+enum TaskApprovalType {
+  registration
+  completion
+}
+
+enum TaskApprovalStatus {
+  pending
+  approved
+  rejected
+  skipped
+}
+
+enum KanbanColumnType {
+  workflow
+  status
+}
+
+enum RepeatUnit {
+  day
+  week
+  month
+}
+
+enum ExportFormat {
+  markdown
+  json
+}
+
+enum ExportStatus {
+  completed
+  failed
+}
+
+enum EmployeeLinkStatus {
+  none
+  pending
+  confirmed
+  rejected
+}
+
+enum TeamRelationStatus {
+  pending
+  confirmed
+  rejected
+  admin_confirmed
+}
+
+model User {
+  id             String        @id @default(cuid())
+  username       String        @unique
+  displayName    String
+  passwordHash   String
+  enabled        Boolean       @default(true)
+  mustChangePass Boolean       @default(false)
+  currentProjectId String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  roles          UserRole[]
+  projectScopes  UserProject[]
+  currentProject Project?      @relation("CurrentProject", fields: [currentProjectId], references: [id], onDelete: SetNull)
+  statusOptions  TaskStatusOption[]
+  employees      Employee[]    @relation("EmployeeOwner")
+  linkedEmployees Employee[]   @relation("EmployeeLinkedUser")
+  dashboardPrefs DashboardSectionPreference[]
+  kanbanPrefs    KanbanColumnPreference[]
+  createdTasks   Task[]        @relation("TaskCreatedBy")
+  updatedTasks   Task[]        @relation("TaskUpdatedBy")
+  ownedTasks     Task[]        @relation("TaskOwnedBy")
+  performedTasks Task[]        @relation("TaskPerformedBy")
+  comments       TaskComment[]
+  taskHistory    TaskHistory[]
+  taskApprovals  TaskApproval[] @relation("TaskApprovalReviewer")
+  exportJobs     ExportJob[]
+  teamReports    TeamRelation[] @relation("TeamManager")
+  teamManagers   TeamRelation[] @relation("TeamReport")
+  createdTeamRelations TeamRelation[] @relation("TeamRelationCreatedBy")
+
+  @@index([currentProjectId])
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  description String           @default("")
+  system      Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  label       String
+  description String           @default("")
+  createdAt   DateTime         @default(now())
+
+  roles       RolePermission[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  key         String
+  name        String
+  description String   @default("")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tasks   Task[]
+  members UserProject[]
+  currentForUsers User[] @relation("CurrentProject")
+  employees EmployeeProject[]
+
+  @@unique([key])
+  @@index([active, name])
+}
+
+model UserProject {
+  userId    String
+  projectId String
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([userId, projectId])
+}
+
+model TaskStatusOption {
+  id        String   @id @default(cuid())
+  key       String
+  label     String
+  color     String   @default("slate")
+  sortOrder Int
+  done      Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  tasks Task[]
+
+  @@unique([ownerId, key])
+  @@index([ownerId, active, sortOrder])
+}
+
+model Employee {
+  id              String             @id @default(cuid())
+  key             String
+  name            String
+  active          Boolean            @default(true)
+  linkStatus      EmployeeLinkStatus @default(none)
+  linkRequestedAt DateTime?
+  linkRespondedAt DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  ownerId String
+  owner   User   @relation("EmployeeOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  linkedUserId String?
+  linkedUser   User?   @relation("EmployeeLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
+
+  tasks TaskEmployee[]
+  teamRelations TeamRelation[]
+  projects EmployeeProject[]
+
+  @@unique([ownerId, key])
+  @@index([ownerId, active])
+  @@index([linkedUserId, linkStatus])
+}
+
+model EmployeeProject {
+  employeeId String
+  projectId  String
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([employeeId, projectId])
+  @@index([projectId])
+}
+
+model DashboardSectionPreference {
+  id        String   @id @default(cuid())
+  sectionKey String
+  label     String
+  enabled   Boolean @default(true)
+  sortOrder Int
+  config    Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, sectionKey])
+  @@index([ownerId, enabled, sortOrder])
+}
+
+model KanbanColumnPreference {
+  id         String           @id @default(cuid())
+  columnKey  String
+  columnType KanbanColumnType
+  enabled    Boolean          @default(true)
+  sortOrder  Int
+  widthPx    Int              @default(320)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, columnKey])
+  @@index([ownerId, enabled, sortOrder])
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  sourcePath  String?      @unique
+  title       String
+  description String       @default("")
+  result      String       @default("")
+  feedback    String       @default("")
+  taskType    TaskType     @default(big)
+  kind        TaskKind     @default(assigned)
+  workflowStatus TaskWorkflowStatus @default(active)
+  priority    TaskPriority @default(normal)
+  startDate   DateTime?
+  dueDate     DateTime?
+  dueHistory  Json?
+  sortOrder   Int          @default(100)
+  repeats     Boolean      @default(false)
+  repeatEvery Int          @default(1)
+  repeatUnit  RepeatUnit   @default(day)
+  seriesId    String?
+  occurrence  DateTime?
+  completedAt DateTime?
+  deletedAt   DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  projectId   String
+  statusId    String
+  parentId    String?
+  performerId String
+  ownerId     String?
+  createdById String
+  updatedById String?
+
+  project   Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status    TaskStatusOption @relation(fields: [statusId], references: [id])
+  parent    Task?            @relation("TaskHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Task[]           @relation("TaskHierarchy")
+  performer User             @relation("TaskPerformedBy", fields: [performerId], references: [id])
+  owner     User?            @relation("TaskOwnedBy", fields: [ownerId], references: [id], onDelete: SetNull)
+  createdBy User             @relation("TaskCreatedBy", fields: [createdById], references: [id])
+  updatedBy User?            @relation("TaskUpdatedBy", fields: [updatedById], references: [id])
+
+  employees TaskEmployee[]
+  comments  TaskComment[]
+  history   TaskHistory[]
+  approvals TaskApproval[]
+
+  @@index([projectId, statusId])
+  @@index([parentId])
+  @@index([parentId, sortOrder])
+  @@index([performerId])
+  @@index([ownerId])
+  @@index([workflowStatus])
+  @@index([createdById, taskType])
+  @@index([seriesId, occurrence])
+  @@index([createdById])
+  @@index([deletedAt])
+  @@index([dueDate])
+}
+
+model TaskApproval {
+  id        String             @id @default(cuid())
+  type      TaskApprovalType
+  round     Int
+  level     Int
+  status    TaskApprovalStatus @default(pending)
+  note      String             @default("")
+  actedAt   DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  taskId     String
+  reviewerId String
+
+  task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  reviewer User @relation("TaskApprovalReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, type, round, level])
+  @@index([reviewerId, status])
+  @@index([taskId, type, status])
+}
+
+model TaskEmployee {
+  taskId     String
+  employeeId String
+
+  task     Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, employeeId])
+}
+
+model TeamRelation {
+  id        String             @id @default(cuid())
+  status    TeamRelationStatus @default(pending)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  managerId String
+  reportId  String
+  createdById String
+  sourceEmployeeId String?
+
+  manager User @relation("TeamManager", fields: [managerId], references: [id], onDelete: Cascade)
+  report  User @relation("TeamReport", fields: [reportId], references: [id], onDelete: Cascade)
+  createdBy User @relation("TeamRelationCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  sourceEmployee Employee? @relation(fields: [sourceEmployeeId], references: [id], onDelete: SetNull)
+
+  @@unique([managerId, reportId])
+  @@index([managerId, status])
+  @@index([reportId, status])
+  @@index([sourceEmployeeId])
+}
+
+model TaskComment {
+  id        String   @id @default(cuid())
+  body      String
+  createdAt DateTime @default(now())
+
+  taskId String
+  userId String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+}
+
+model TaskHistory {
+  id        String   @id @default(cuid())
+  action    String
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+
+  taskId String
+  userId String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+}
+
+model ExportJob {
+  id        String       @id @default(cuid())
+  format    ExportFormat
+  status    ExportStatus
+  fileName  String
+  content   String
+  filePath  String?
+  createdAt DateTime     @default(now())
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+}
