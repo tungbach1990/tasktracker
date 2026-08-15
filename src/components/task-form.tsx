@@ -54,7 +54,7 @@ export function TaskForm({
     [canChooseProject, employees, projects, statuses, task?.ownerId],
   );
   const contexts = useMemo(
-    () => (task ? [fallbackContext] : actingContexts.length ? actingContexts : [fallbackContext]),
+    () => (task ? [fallbackContext, ...actingContexts] : actingContexts.length ? actingContexts : [fallbackContext]),
     [actingContexts, fallbackContext, task],
   );
   const activeProjects = useMemo(() => {
@@ -79,20 +79,29 @@ export function TaskForm({
     [task?.employees],
   );
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState(initialEmployeeIds);
-  const selectedEmployeeOwnerIds = useMemo(() => {
+  const selectedEmployeeTargetUserIds = useMemo(() => {
     const byId = new Map(allEmployees.map((employee) => [employee.id, employee]));
     return Array.from(
       new Set(
         Array.from(selectedEmployeeIds)
-          .map((id) => byId.get(id)?.ownerId)
-          .filter((ownerId): ownerId is string => Boolean(ownerId)),
+          .map((id) => byId.get(id)?.linkedUserId)
+          .filter((userId): userId is string => Boolean(userId)),
       ),
     );
   }, [allEmployees, selectedEmployeeIds]);
-  const ownerConflict = selectedEmployeeOwnerIds.length > 1;
+  const hasUnlinkedSelectedEmployee = useMemo(() => {
+    const byId = new Map(allEmployees.map((employee) => [employee.id, employee]));
+    return Array.from(selectedEmployeeIds).some((id) => !byId.get(id)?.linkedUserId);
+  }, [allEmployees, selectedEmployeeIds]);
+  const selectedTargetUserId =
+    selectedEmployeeTargetUserIds.length === 1 ? selectedEmployeeTargetUserIds[0] : "";
+  const missingStatusContext =
+    Boolean(selectedTargetUserId) && !contexts.some((context) => context.owner.id === selectedTargetUserId);
+  const ownerConflict =
+    selectedEmployeeTargetUserIds.length > 1 || hasUnlinkedSelectedEmployee || missingStatusContext;
   const selectedContext =
-    selectedEmployeeOwnerIds.length === 1
-      ? contexts.find((context) => context.owner.id === selectedEmployeeOwnerIds[0]) ?? contexts[0] ?? fallbackContext
+    selectedTargetUserId
+      ? contexts.find((context) => context.owner.id === selectedTargetUserId) ?? contexts[0] ?? fallbackContext
       : contexts[0] ?? fallbackContext;
   const activeStatuses = selectedContext.statuses;
   const canSelectProject = task ? canChooseProject : canChooseProject || activeProjects.length > 1;

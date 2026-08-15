@@ -6,7 +6,6 @@ import { CheckCircle2, MessageSquare, Plus, RotateCcw, Trash2 } from "lucide-rea
 import {
   addCommentAction,
   approveTaskApprovalAction,
-  createChildTaskAction,
   deleteTaskAction,
   markTaskDoneAction,
   rejectTaskApprovalAction,
@@ -14,16 +13,17 @@ import {
   resubmitRegistrationAction,
 } from "@/app/actions/tasks";
 import { AppShell } from "@/components/shell";
+import { ChildTaskForm } from "@/components/child-task-form";
 import { PageHeader } from "@/components/page-header";
 import { PriorityBadge, StatusBadge } from "@/components/badge";
 import { TaskCard } from "@/components/task-card";
 import { TaskForm } from "@/components/task-form";
 import { canActOnApprovalForUser, isTaskFinalDone } from "@/lib/approvals";
-import { priorities, taskKinds, workflowStatusLabels } from "@/lib/constants";
+import { taskKinds, workflowStatusLabels } from "@/lib/constants";
 import { dateTime, shortDate } from "@/lib/format";
 import { canActAsDelegatedManager, canDeleteTask, canEditTask, canUpdateTaskExecution, canViewTask, hasPermission, requireActiveUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { getTaskReferenceData } from "@/lib/queries";
+import { getLinkedEmployeeStatusContexts, getTaskReferenceData } from "@/lib/queries";
 import { safeUserSelect } from "@/lib/safe-selects";
 import { compareOperationalPriority } from "@/lib/task-priority";
 
@@ -128,6 +128,9 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   const referenceData = canEditTaskDetails || canManageChildren
     ? await getTaskReferenceData(user, id, taskOwnerId, task.projectId)
     : null;
+  const linkedStatusContexts = referenceData
+    ? await getLinkedEmployeeStatusContexts([referenceData])
+    : [];
   const statusOwnerIds = Array.from(new Set([taskOwnerId, ...task.children.map((child) => child.ownerId ?? child.createdById)]));
   const cardStatuses = await prisma.taskStatusOption.findMany({
     where: { ownerId: { in: statusOwnerIds } },
@@ -279,8 +282,10 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
               <ChildTaskForm
                 parentId={task.id}
                 projectId={task.projectId}
+                ownerId={taskOwnerId}
                 employees={referenceData.employees}
                 statuses={referenceData.statuses}
+                statusContexts={linkedStatusContexts}
               />
             </section>
           ) : null}
@@ -294,6 +299,7 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
                 employees={referenceData.employees}
                 statuses={referenceData.statuses}
                 canChooseProject={canChooseProject}
+                actingContexts={linkedStatusContexts}
               />
             </section>
           ) : null}
@@ -484,90 +490,6 @@ function ApprovalTimeline({
         {approvals.length === 0 ? <p className="text-sm text-slate-500">Chưa có vòng phê duyệt.</p> : null}
       </div>
     </section>
-  );
-}
-
-function ChildTaskForm({
-  parentId,
-  projectId,
-  employees,
-  statuses,
-}: {
-  parentId: string;
-  projectId: string;
-  employees: Awaited<ReturnType<typeof getTaskReferenceData>>["employees"];
-  statuses: Awaited<ReturnType<typeof getTaskReferenceData>>["statuses"];
-}) {
-  const visibleEmployees = employees.filter((employee) =>
-    employee.projects.some((scope) => scope.projectId === projectId),
-  );
-
-  return (
-    <form action={createChildTaskAction} className="grid gap-3 lg:grid-cols-2">
-      <input type="hidden" name="parentId" value={parentId} />
-      <label className="block lg:col-span-2">
-        <span className="text-xs font-semibold uppercase text-slate-500">Tiêu đề</span>
-        <input name="title" required className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm" />
-      </label>
-      <label className="block">
-        <span className="text-xs font-semibold uppercase text-slate-500">Trạng thái</span>
-        <select name="statusId" defaultValue={statuses[0]?.id} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
-          {statuses.map((status) => (
-            <option key={status.id} value={status.id}>
-              {status.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block">
-        <span className="text-xs font-semibold uppercase text-slate-500">Độ ưu tiên</span>
-        <select name="priority" defaultValue="normal" className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
-          {priorities.map((priority) => (
-            <option key={priority.value} value={priority.value}>
-              {priority.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block">
-        <span className="text-xs font-semibold uppercase text-slate-500">Ngày bắt đầu</span>
-        <input name="startDate" type="date" className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm" />
-      </label>
-      <label className="block">
-        <span className="text-xs font-semibold uppercase text-slate-500">Hạn hoàn thành</span>
-        <input name="dueDate" type="date" className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm" />
-      </label>
-      <label className="block">
-        <span className="text-xs font-semibold uppercase text-slate-500">Thứ tự</span>
-        <input name="sortOrder" type="number" defaultValue={100} min={0} max={10000} className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm" />
-      </label>
-      <label className="block lg:col-span-2">
-        <span className="text-xs font-semibold uppercase text-slate-500">Mô tả nhiệm vụ con</span>
-        <textarea name="description" rows={3} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
-      </label>
-      <div className="lg:col-span-2">
-        <div className="text-xs font-semibold uppercase text-slate-500">Người nhận việc</div>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2">
-          {visibleEmployees.map((employee) => (
-            <label key={employee.id} className="flex min-h-10 items-center gap-2 rounded-md border border-slate-200 px-3 text-sm">
-              <input type="checkbox" name="employeeIds" value={employee.id} className="size-4 rounded border-slate-300" />
-              <span>{employee.name}</span>
-            </label>
-          ))}
-          {visibleEmployees.length === 0 ? (
-            <div className="rounded-md border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-500">
-              Chưa có nhân viên thuộc dự án này.
-            </div>
-          ) : null}
-        </div>
-      </div>
-      <div className="lg:col-span-2">
-        <button type="submit" className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800">
-          <Plus size={16} aria-hidden="true" />
-          Thêm nhiệm vụ con
-        </button>
-      </div>
-    </form>
   );
 }
 

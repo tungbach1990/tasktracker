@@ -11,7 +11,7 @@ import { CountBadge } from "@/components/badge";
 import { priorities } from "@/lib/constants";
 import { hasPermission, requireActiveUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { getTaskDelegationContexts, getTaskReferenceData, taskScopeWhere } from "@/lib/queries";
+import { getLinkedEmployeeStatusContexts, getTaskDelegationContexts, getTaskReferenceData, taskScopeWhere } from "@/lib/queries";
 import { compareOperationalPriority } from "@/lib/task-priority";
 import { getDirectReportLookup } from "@/lib/team";
 
@@ -31,13 +31,28 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
   const recurringCreated = typeof params.recurring === "string" ? Number(params.recurring) : null;
   const canViewAll = hasPermission(user, "task.view.all");
   const canViewTeam = hasPermission(user, "team.view.downline");
+  const canCreateOwnTask = hasPermission(user, "task.create");
+  const canChooseProject = canViewAll || hasPermission(user, "project.manage");
 
   const { projects, employees, statuses } = await getTaskReferenceData(user);
   const delegationContexts = await getTaskDelegationContexts(user);
-  const canCreateOwnTask = hasPermission(user, "task.create");
+  const createBaseContexts = [
+    ...(canCreateOwnTask
+      ? [
+          {
+            owner: { id: user.id, username: user.username, displayName: user.displayName },
+            canChooseProject,
+            projects,
+            employees,
+            statuses,
+          },
+        ]
+      : []),
+    ...delegationContexts,
+  ];
+  const linkedStatusContexts = await getLinkedEmployeeStatusContexts(createBaseContexts);
   const canCreate = canCreateOwnTask || delegationContexts.length > 0;
   const canUpdate = hasPermission(user, "task.update") || delegationContexts.length > 0;
-  const canChooseProject = canViewAll || hasPermission(user, "project.manage");
   const directReportByUser = canViewAll || canViewTeam ? await getDirectReportLookup(user.id) : new Map();
   const directBranches = Array.from(
     new Map(
@@ -158,22 +173,9 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
           <TaskForm
             projects={projects}
             employees={employees}
-                statuses={statuses}
-                canChooseProject={canChooseProject}
-                actingContexts={[
-                  ...(canCreateOwnTask
-                    ? [
-                        {
-                          owner: { id: user.id, username: user.username, displayName: user.displayName },
-                          canChooseProject,
-                          projects,
-                          employees,
-                          statuses,
-                        },
-                      ]
-                    : []),
-                  ...delegationContexts,
-                ]}
+            statuses={statuses}
+            canChooseProject={canChooseProject}
+            actingContexts={[...createBaseContexts, ...linkedStatusContexts]}
           />
         </section>
       ) : null}

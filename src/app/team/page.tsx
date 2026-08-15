@@ -114,6 +114,16 @@ export default async function TeamPage() {
           AND: [
             { deletedAt: null },
             { projectId: delegation.projectId },
+            downlineIds.length
+              ? {
+                  NOT: {
+                    OR: [
+                      { ownerId: { in: downlineIds } },
+                      { ownerId: null, createdById: { in: downlineIds } },
+                    ],
+                  },
+                }
+              : {},
             {
               OR: [
                 { ownerId: { in: delegatedUserIds } },

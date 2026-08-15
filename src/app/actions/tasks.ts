@@ -97,9 +97,10 @@ function projectIdForUpdate(user: CurrentUser, submittedProjectId: string, previ
     : previousProjectId;
 }
 
-async function employeeIdsForOwner(ownerId: string, submittedEmployeeIds: string[]) {
+async function employeeIdsForOwner(ownerId: string, submittedEmployeeIds: string[], projectId?: string) {
   if (submittedEmployeeIds.length > 0) return submittedEmployeeIds;
   const selfEmployee = await ensureSelfEmployee(prisma, ownerId);
+  if (projectId) await ensureEmployeeProject(selfEmployee.id, projectId);
   return [selfEmployee.id];
 }
 
@@ -149,14 +150,103 @@ async function assertEmployeesAssignableByActor(
   if (hasForbiddenManager || hasDelegatedManagerSelf) redirect("/tasks");
 }
 
-async function assertEmployeeIdsAssignableByActor(user: CurrentUser, ownerId: string, employeeIds: string[]) {
-  if (employeeIds.length === 0) return;
+async function selectedEmployeesForProject(employeeIds: string[], projectId: string) {
+  const uniqueEmployeeIds = Array.from(new Set(employeeIds));
+  const employees = await prisma.employee.findMany({
+    where: { id: { in: uniqueEmployeeIds }, active: true },
+    select: {
+      id: true,
+      key: true,
+      ownerId: true,
+      linkedUserId: true,
+      linkStatus: true,
+      projects: { where: { projectId }, select: { projectId: true } },
+    },
+    orderBy: [{ ownerId: "asc" }, { name: "asc" }, { id: "asc" }],
+  });
+
+  if (
+    employees.length !== uniqueEmployeeIds.length ||
+    employees.some((employee) => employee.projects.length === 0)
+  ) {
+    redirect("/tasks");
+  }
+
+  return { uniqueEmployeeIds, employees };
+}
+
+async function resolveSelectedEmployeeAssignment(
+  user: CurrentUser,
+  projectId: string,
+  submittedEmployeeIds: string[],
+  options: { requireCreatePermission?: boolean } = {},
+) {
+  const { uniqueEmployeeIds, employees } = await selectedEmployeesForProject(submittedEmployeeIds, projectId);
+  if (
+    employees.some((employee) => employee.linkStatus !== "confirmed" || !employee.linkedUserId)
+  ) {
+    redirect("/tasks");
+  }
+
+  const employeeCatalogOwnerIds = Array.from(new Set(employees.map((employee) => employee.ownerId)));
+  if (employeeCatalogOwnerIds.length !== 1) redirect("/tasks");
+  const employeeCatalogOwnerId = employeeCatalogOwnerIds[0];
+
+  const linkedUserIds = Array.from(
+    new Set(employees.map((employee) => employee.linkedUserId).filter((id): id is string => Boolean(id))),
+  );
+  if (linkedUserIds.length !== 1) redirect("/tasks");
+  const ownerId = linkedUserIds[0];
+  const hasGlobalAssignmentPermission = hasPermission(user, "task.view.all") || hasPermission(user, "team.manage.all");
+  const delegatedForCatalogOwner =
+    employeeCatalogOwnerId !== user.id &&
+    (await canActAsDelegatedManager(user.id, employeeCatalogOwnerId, projectId));
+
+  if (employeeCatalogOwnerId === user.id) {
+    if (
+      options.requireCreatePermission !== false &&
+      (!hasPermission(user, "task.create") || !(await canUseProjectForOwnCreate(user, projectId)))
+    ) {
+      redirect("/dashboard");
+    }
+  } else if (
+    !hasGlobalAssignmentPermission &&
+    !delegatedForCatalogOwner
+  ) {
+    redirect("/dashboard");
+  }
+
+  await assertEmployeesAssignableByActor(user, employeeCatalogOwnerId, employees);
+  await ensureUserSettings(prisma, ownerId);
+
+  return {
+    ownerId,
+    performerId: ownerId,
+    projectId,
+    employeeIds: uniqueEmployeeIds,
+    employeeCatalogOwnerId,
+    onBehalfOfId: delegatedForCatalogOwner ? employeeCatalogOwnerId : null,
+  };
+}
+
+async function resolveDefaultOwnerAssignment(user: CurrentUser, ownerId: string, projectId: string) {
+  const employeeIds = await employeeIdsForOwner(ownerId, [], projectId);
   const employees = await prisma.employee.findMany({
     where: { id: { in: employeeIds }, ownerId, active: true },
     select: { id: true, key: true, linkedUserId: true },
   });
-  if (employees.length !== new Set(employeeIds).size) redirect("/tasks");
+  if (employees.length !== employeeIds.length) redirect("/tasks");
   await assertEmployeesAssignableByActor(user, ownerId, employees);
+  await ensureUserSettings(prisma, ownerId);
+
+  return {
+    ownerId,
+    performerId: ownerId,
+    projectId,
+    employeeIds,
+    employeeCatalogOwnerId: ownerId,
+    onBehalfOfId: await onBehalfOfIdForActor(user.id, ownerId, projectId),
+  };
 }
 
 async function resolveCreateContext(user: CurrentUser, data: TaskPayload) {
@@ -166,83 +256,10 @@ async function resolveCreateContext(user: CurrentUser, data: TaskPayload) {
     if (!hasPermission(user, "task.create") || !(await canUseProjectForOwnCreate(user, projectId))) {
       redirect("/dashboard");
     }
-    const selfEmployee = await ensureSelfEmployee(prisma, user.id);
-    await ensureEmployeeProject(selfEmployee.id, projectId);
-    return {
-      ownerId: user.id,
-      projectId,
-      employeeIds: [selfEmployee.id],
-      onBehalfOfId: null as string | null,
-    };
+    return resolveDefaultOwnerAssignment(user, user.id, projectId);
   }
 
-  const uniqueEmployeeIds = Array.from(new Set(data.employeeIds));
-  const employees = await prisma.employee.findMany({
-    where: { id: { in: uniqueEmployeeIds }, active: true },
-    select: {
-      id: true,
-      key: true,
-      ownerId: true,
-      linkedUserId: true,
-      projects: { where: { projectId }, select: { projectId: true } },
-    },
-    orderBy: [{ ownerId: "asc" }, { name: "asc" }, { id: "asc" }],
-  });
-  if (employees.length !== uniqueEmployeeIds.length || employees.some((employee) => employee.projects.length === 0)) {
-    redirect("/tasks");
-  }
-
-  const ownerIds = Array.from(new Set(employees.map((employee) => employee.ownerId)));
-  if (ownerIds.length !== 1) redirect("/tasks");
-  const ownerId = ownerIds[0];
-
-  if (ownerId === user.id) {
-    if (!hasPermission(user, "task.create")) redirect("/dashboard");
-  } else if (
-    !hasPermission(user, "task.view.all") &&
-    !hasPermission(user, "team.manage.all") &&
-    !(await canActAsDelegatedManager(user.id, ownerId, projectId))
-  ) {
-    redirect("/dashboard");
-  }
-
-  await assertEmployeesAssignableByActor(user, ownerId, employees);
-
-  return {
-    ownerId,
-    projectId,
-    employeeIds: uniqueEmployeeIds,
-    onBehalfOfId:
-      ownerId !== user.id && (await canActAsDelegatedManager(user.id, ownerId, projectId))
-        ? ownerId
-        : null,
-  };
-}
-
-async function performerIdFromEmployees(
-  settingsOwnerId: string,
-  kind: "assigned" | "self_registered",
-  employeeIds: string[],
-  fallbackUserId: string,
-) {
-  if (kind === "self_registered") return fallbackUserId;
-
-  if (employeeIds.length > 0) {
-    const employee = await prisma.employee.findFirst({
-      where: {
-        id: { in: employeeIds },
-        ownerId: settingsOwnerId,
-        active: true,
-        linkStatus: "confirmed",
-        linkedUserId: { not: null },
-      },
-      orderBy: [{ name: "asc" }, { id: "asc" }],
-      select: { linkedUserId: true },
-    });
-    if (employee?.linkedUserId) return employee.linkedUserId;
-  }
-
-  return fallbackUserId;
+  return resolveSelectedEmployeeAssignment(user, projectId, data.employeeIds, { requireCreatePermission: true });
 }
 
 async function validateUserSettingsSelection(
@@ -250,9 +267,11 @@ async function validateUserSettingsSelection(
   data: { statusId: string },
   projectId: string,
   employeeIds: string[],
-  options: { requireActiveProject?: boolean } = {},
+  options: { requireActiveProject?: boolean; employeeCatalogOwnerId?: string } = {},
 ) {
+  await ensureUserSettings(prisma, userId);
   const requireActiveProject = options.requireActiveProject ?? true;
+  const employeeCatalogOwnerId = options.employeeCatalogOwnerId ?? userId;
   const [project, status, employeeCount] = await Promise.all([
     prisma.project.findFirst({
       where: {
@@ -265,7 +284,7 @@ async function validateUserSettingsSelection(
       ? prisma.employee.count({
           where: {
             id: { in: employeeIds },
-            ownerId: userId,
+            ownerId: employeeCatalogOwnerId,
             active: true,
             projects: { some: { projectId } },
           },
@@ -497,9 +516,11 @@ function revalidateTaskViews(taskId: string, parentId?: string | null) {
 export async function createTaskAction(formData: FormData) {
   const user = await requireActiveUser();
   const data = taskPayload(formData);
-  const { ownerId, projectId, employeeIds, onBehalfOfId } = await resolveCreateContext(user, data);
-  const { status } = await validateUserSettingsSelection(ownerId, data, projectId, employeeIds);
-  const performerId = await performerIdFromEmployees(ownerId, data.kind, employeeIds, ownerId);
+  const { ownerId, performerId, projectId, employeeIds, employeeCatalogOwnerId, onBehalfOfId } =
+    await resolveCreateContext(user, data);
+  const { status } = await validateUserSettingsSelection(ownerId, data, projectId, employeeIds, {
+    employeeCatalogOwnerId,
+  });
   const createStatusId =
     data.kind === "self_registered" && status.done
       ? await defaultOpenStatusId(ownerId)
@@ -584,12 +605,16 @@ export async function createChildTaskAction(formData: FormData) {
   const dueDate = optionalDate(data.dueDate);
   if (dueDate && parent.dueDate && dueDate > parent.dueDate) redirect(`/tasks/${parent.id}`);
 
-  const employeeIds = await employeeIdsForOwner(ownerId, data.employeeIds);
-  await assertEmployeeIdsAssignableByActor(user, ownerId, employeeIds);
-  const { status } = await validateUserSettingsSelection(ownerId, data, parent.projectId, employeeIds, {
+  const assignment =
+    data.employeeIds.length > 0
+      ? await resolveSelectedEmployeeAssignment(user, parent.projectId, data.employeeIds, {
+          requireCreatePermission: true,
+        })
+      : await resolveDefaultOwnerAssignment(user, ownerId, parent.projectId);
+  const { status } = await validateUserSettingsSelection(assignment.ownerId, data, parent.projectId, assignment.employeeIds, {
     requireActiveProject: false,
+    employeeCatalogOwnerId: assignment.employeeCatalogOwnerId,
   });
-  const performerId = await performerIdFromEmployees(ownerId, "assigned", employeeIds, ownerId);
 
   const child = await prisma.task.create({
     data: {
@@ -614,13 +639,13 @@ export async function createChildTaskAction(formData: FormData) {
       seriesId: null,
       occurrence: null,
       completedAt: null,
-      performerId,
-      ownerId,
+      performerId: assignment.performerId,
+      ownerId: assignment.ownerId,
       createdById: user.id,
       updatedById: user.id,
       employees: {
         createMany: {
-          data: employeeIds.map((employeeId) => ({ employeeId })),
+          data: assignment.employeeIds.map((employeeId) => ({ employeeId })),
           skipDuplicates: true,
         },
       },
@@ -628,14 +653,15 @@ export async function createChildTaskAction(formData: FormData) {
         create: {
           action: "child_created",
           userId: user.id,
-          onBehalfOfId,
+          onBehalfOfId: assignment.onBehalfOfId,
           after: {
             parentId: parent.id,
             title: data.title,
             statusId: data.statusId,
             priority: data.priority,
-            performerId,
-            employeeIds,
+            performerId: assignment.performerId,
+            ownerId: assignment.ownerId,
+            employeeIds: assignment.employeeIds,
           },
         },
       },
@@ -668,12 +694,16 @@ export async function updateTaskAction(formData: FormData) {
   const data = taskPayload(formData);
   const settingsOwnerId = taskOwnerId(previous);
   const projectId = projectIdForUpdate(user, data.projectId, previous.projectId);
-  const onBehalfOfId = await onBehalfOfIdForActor(user.id, settingsOwnerId, projectId);
-  await assertEmployeeIdsAssignableByActor(user, settingsOwnerId, data.employeeIds);
-  const { status } = await validateUserSettingsSelection(settingsOwnerId, data, projectId, data.employeeIds, {
+  const assignment =
+    data.employeeIds.length > 0
+      ? await resolveSelectedEmployeeAssignment(user, projectId, data.employeeIds, {
+          requireCreatePermission: false,
+        })
+      : await resolveDefaultOwnerAssignment(user, settingsOwnerId, projectId);
+  const { status } = await validateUserSettingsSelection(assignment.ownerId, data, projectId, assignment.employeeIds, {
     requireActiveProject: projectId !== previous.projectId,
+    employeeCatalogOwnerId: assignment.employeeCatalogOwnerId,
   });
-  const performerId = await performerIdFromEmployees(settingsOwnerId, data.kind, data.employeeIds, settingsOwnerId);
   await assertTaskCanUseDoneStatus(taskId, status.done);
   const nextDueDate = optionalDate(data.dueDate);
   if (nextDueDate && previous.parent?.dueDate && nextDueDate > previous.parent.dueDate) {
@@ -706,11 +736,12 @@ export async function updateTaskAction(formData: FormData) {
         sortOrder: data.sortOrder,
         ...recurrencePayload(data, previous.seriesId),
         completedAt: status.done && previous.workflowStatus === "final_done" ? previous.completedAt : null,
-        performerId,
+        performerId: assignment.performerId,
+        ownerId: assignment.ownerId,
         updatedById: user.id,
         employees: {
           createMany: {
-            data: data.employeeIds.map((employeeId) => ({ employeeId })),
+            data: assignment.employeeIds.map((employeeId) => ({ employeeId })),
             skipDuplicates: true,
           },
         },
@@ -720,12 +751,13 @@ export async function updateTaskAction(formData: FormData) {
       data: {
         taskId,
         userId: user.id,
-        onBehalfOfId,
+        onBehalfOfId: assignment.onBehalfOfId,
         action: "updated",
         before: {
           title: previous.title,
           kind: previous.kind,
           performerId: previous.performerId,
+          ownerId: settingsOwnerId,
           parentId: previous.parentId,
           projectId: previous.projectId,
           statusId: previous.statusId,
@@ -740,7 +772,8 @@ export async function updateTaskAction(formData: FormData) {
         after: {
           title: data.title,
           kind: data.kind,
-          performerId,
+          performerId: assignment.performerId,
+          ownerId: assignment.ownerId,
           parentId: previous.parentId,
           projectId,
           statusId: data.statusId,
@@ -750,7 +783,7 @@ export async function updateTaskAction(formData: FormData) {
           repeatEvery: data.repeatEvery,
           repeatUnit: data.repeatUnit,
           occurrence: data.repeats ? data.occurrence : "",
-          employeeIds: data.employeeIds,
+          employeeIds: assignment.employeeIds,
         },
       },
     }),

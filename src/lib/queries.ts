@@ -204,6 +204,8 @@ async function taskReferenceDataForOwner(
       where: {
         ownerId,
         active: true,
+        linkStatus: "confirmed",
+        linkedUserId: { not: null },
         projects: projectIds?.length ? { some: { projectId: { in: projectIds } } } : undefined,
       },
       include: {
@@ -248,6 +250,50 @@ async function taskReferenceDataForOwner(
     statuses,
     parentTasks,
   };
+}
+
+type TaskAssignmentStatusContextInput = {
+  owner: { id: string; username: string; displayName: string };
+  employees: Array<{
+    linkedUserId: string | null;
+    linkedUser?: { id: string; username: string; displayName: string } | null;
+  }>;
+};
+
+export async function getLinkedEmployeeStatusContexts(contexts: TaskAssignmentStatusContextInput[]) {
+  const existingOwnerIds = new Set(contexts.map((context) => context.owner.id));
+  const linkedUsers = new Map<string, { id: string; username: string; displayName: string }>();
+
+  for (const context of contexts) {
+    for (const employee of context.employees) {
+      if (!employee.linkedUserId || existingOwnerIds.has(employee.linkedUserId)) continue;
+      if (employee.linkedUser) {
+        linkedUsers.set(employee.linkedUser.id, employee.linkedUser);
+      }
+    }
+  }
+
+  if (linkedUsers.size === 0) return [];
+
+  await Promise.all(Array.from(linkedUsers.keys()).map((userId) => ensureUserSettings(prisma, userId)));
+  const statuses = await prisma.taskStatusOption.findMany({
+    where: { ownerId: { in: Array.from(linkedUsers.keys()) }, active: true },
+    orderBy: [{ ownerId: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
+  });
+  const statusesByOwner = new Map<string, typeof statuses>();
+  for (const status of statuses) {
+    const ownerStatuses = statusesByOwner.get(status.ownerId) ?? [];
+    ownerStatuses.push(status);
+    statusesByOwner.set(status.ownerId, ownerStatuses);
+  }
+
+  return Array.from(linkedUsers.values()).map((owner) => ({
+    owner,
+    canChooseProject: false,
+    projects: [],
+    employees: [],
+    statuses: statusesByOwner.get(owner.id) ?? [],
+  }));
 }
 
 export async function getTaskReferenceData(user: CurrentUser, excludeTaskId?: string, settingsOwnerId = user.id, projectId?: string) {

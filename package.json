@@ -11,6 +11,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "db:repair-task-owners": "tsx scripts/repair-task-owner-from-linked-employee.ts",
     "db:studio": "prisma studio",
     "import:obsidian": "tsx scripts/import-obsidian-tasks.ts"
   },
