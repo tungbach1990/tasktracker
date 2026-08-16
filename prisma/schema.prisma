@@ -56,6 +56,15 @@ enum RepeatUnit {
   month
 }
 
+enum RepeatPattern {
+  daily
+  weekdays
+  weekly
+  monthly
+  quarterly
+  yearly
+}
+
 enum ExportFormat {
   markdown
   json
@@ -299,6 +308,10 @@ model Task {
   repeats     Boolean      @default(false)
   repeatEvery Int          @default(1)
   repeatUnit  RepeatUnit   @default(day)
+  repeatPattern RepeatPattern @default(daily)
+  repeatWeekdays Json?
+  repeatEndsAt DateTime?
+  repeatNoticeDays Int     @default(7)
   seriesId    String?
   occurrence  DateTime?
   completedAt DateTime?

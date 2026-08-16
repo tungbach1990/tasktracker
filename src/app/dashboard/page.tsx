@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { CalendarClock, CheckCircle2, Clock3, FastForward, Flame, ListTodo, PlayCircle, Plus, TriangleAlert, UsersRound } from "lucide-react";
+import type { RecurrenceCardMeta } from "@/lib/recurrence-utils";
 
 import { approveTaskApprovalAction, rejectTaskApprovalAction } from "@/app/actions/tasks";
 import { AppShell } from "@/components/shell";
@@ -11,6 +12,7 @@ import { dashboardNumber } from "@/lib/settings";
 import { isDueToday, isOverdue, shortDate } from "@/lib/format";
 import { hasPermission, requireActiveUser } from "@/lib/authz";
 import { getDashboardData } from "@/lib/queries";
+import { buildRecurrenceMetaByTaskId } from "@/lib/recurrence-utils";
 import { isPriorityFocus } from "@/lib/task-priority";
 import { getDirectReportLookup } from "@/lib/team";
 
@@ -19,6 +21,7 @@ export default async function DashboardPage() {
   const dashboard = await getDashboardData(user);
   const approvalQueue = await getApprovalQueueForUser(user.id);
   const teamSummary = await getTeamSummary(user, dashboard.tasks);
+  const recurrenceMetaByTaskId = buildRecurrenceMetaByTaskId(dashboard.tasks);
   const enabledPreferences = dashboard.preferences.filter((preference) => preference.enabled);
   const canUpdate = hasPermission(user, "task.update");
 
@@ -86,22 +89,22 @@ export default async function DashboardPage() {
             return <MetricsSection key={preference.id} dashboard={dashboard} />;
           }
           if (preference.sectionKey === "priority_focus") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={priorityTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} icon={<Flame size={16} aria-hidden="true" />} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={priorityTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} recurrenceMetaByTaskId={recurrenceMetaByTaskId} icon={<Flame size={16} aria-hidden="true" />} />;
           }
           if (preference.sectionKey === "overdue") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={overdueTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={overdueTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} recurrenceMetaByTaskId={recurrenceMetaByTaskId} />;
           }
           if (preference.sectionKey === "today") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={todayTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={todayTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} recurrenceMetaByTaskId={recurrenceMetaByTaskId} />;
           }
           if (preference.sectionKey === "upcoming") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={upcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={upcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} recurrenceMetaByTaskId={recurrenceMetaByTaskId} />;
           }
           if (preference.sectionKey === "after_upcoming") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={afterUpcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={afterUpcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} recurrenceMetaByTaskId={recurrenceMetaByTaskId} />;
           }
           if (preference.sectionKey === "start_after") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={startAfterTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={startAfterTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} recurrenceMetaByTaskId={recurrenceMetaByTaskId} />;
           }
           if (preference.sectionKey === "status_summary") {
             return <StatusSummarySection key={preference.id} title={preference.label} dashboard={dashboard} />;
@@ -370,6 +373,7 @@ function TaskSection({
   statuses,
   canUpdate,
   teamRollupByTaskId,
+  recurrenceMetaByTaskId,
   icon,
 }: {
   title: string;
@@ -377,6 +381,7 @@ function TaskSection({
   statuses: Awaited<ReturnType<typeof getDashboardData>>["statuses"];
   canUpdate: boolean;
   teamRollupByTaskId?: Map<string, string>;
+  recurrenceMetaByTaskId?: Map<string, RecurrenceCardMeta>;
   icon?: React.ReactNode;
 }) {
   return (
@@ -396,6 +401,7 @@ function TaskSection({
               compact
               canUpdate={canUpdate}
               teamRollupLabel={teamRollupByTaskId?.get(task.id)}
+              recurrenceMeta={recurrenceMetaByTaskId?.get(task.id)}
             />
           ))
         ) : (

@@ -1,4 +1,4 @@
-import { KanbanColumnType, RepeatUnit, TaskKind, TaskPriority } from "@prisma/client";
+import { KanbanColumnType, RepeatPattern, RepeatUnit, TaskKind, TaskPriority } from "@prisma/client";
 import { z } from "zod";
 
 import { slugifyKey, statusColors } from "@/lib/constants";
@@ -21,12 +21,27 @@ export const taskFormSchema = z.object({
   repeats: z.boolean().default(false),
   repeatEvery: z.coerce.number().int().min(1).max(365).default(1),
   repeatUnit: z.nativeEnum(RepeatUnit).default(RepeatUnit.day),
+  repeatPattern: z.nativeEnum(RepeatPattern).default(RepeatPattern.daily),
+  repeatWeekdays: z.array(z.coerce.number().int().min(0).max(6)).default([]),
+  repeatEndsAt: z.string().optional().default(""),
+  repeatNoticeDays: z.coerce.number().int().min(0).max(365).default(7),
   occurrence: z.string().optional().default(""),
   employeeIds: z.array(z.string()).default([]),
 });
 
 export const childTaskFormSchema = taskFormSchema
-  .omit({ kind: true, projectId: true, repeats: true, repeatEvery: true, repeatUnit: true, occurrence: true })
+  .omit({
+    kind: true,
+    projectId: true,
+    repeats: true,
+    repeatEvery: true,
+    repeatUnit: true,
+    repeatPattern: true,
+    repeatWeekdays: true,
+    repeatEndsAt: true,
+    repeatNoticeDays: true,
+    occurrence: true,
+  })
   .extend({
     parentId: z.string().min(1),
   });

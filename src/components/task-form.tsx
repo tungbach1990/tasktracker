@@ -1,12 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { Employee, Project, Task, TaskEmployee, TaskStatusOption } from "@prisma/client";
+import type { Employee, Project, RepeatPattern, Task, TaskEmployee, TaskStatusOption } from "@prisma/client";
 import { Save } from "lucide-react";
 
 import { createTaskAction, updateTaskAction } from "@/app/actions/tasks";
-import { priorities, repeatUnits, taskKinds } from "@/lib/constants";
+import { priorities, taskKinds } from "@/lib/constants";
 import { dateInputValue } from "@/lib/format";
+import {
+  normalizeRepeatWeekdays,
+  recurrencePreviewKeys,
+  repeatPatterns,
+  repeatWeekdayOptions,
+} from "@/lib/recurrence-utils";
 
 type EmployeeForForm = Employee & {
   linkedUser?: { id: string; username: string; displayName: string } | null;
@@ -110,6 +116,27 @@ export function TaskForm({
   const activeStatuses = selectedContext.statuses;
   const canSelectProject = task ? canChooseProject : canChooseProject || activeProjects.length > 1;
   const [selectedStatusId, setSelectedStatusId] = useState(task?.statusId ?? activeStatuses[0]?.id ?? "");
+  const [repeats, setRepeats] = useState(task?.repeats ?? false);
+  const [repeatPattern, setRepeatPattern] = useState<RepeatPattern>(task?.repeatPattern ?? "daily");
+  const [repeatEvery, setRepeatEvery] = useState(task?.repeatEvery ?? 1);
+  const [repeatNoticeDays, setRepeatNoticeDays] = useState(task?.repeatNoticeDays ?? 7);
+  const [occurrence, setOccurrence] = useState(dateInputValue(task?.occurrence ?? task?.startDate ?? task?.dueDate));
+  const [repeatWeekdays, setRepeatWeekdays] = useState(
+    () => new Set(normalizeRepeatWeekdays(task?.repeatWeekdays)),
+  );
+  const recurrencePreview = useMemo(
+    () =>
+      repeats
+        ? recurrencePreviewKeys({
+            occurrence,
+            repeatEvery,
+            repeatPattern,
+            repeatWeekdays: Array.from(repeatWeekdays),
+            count: 5,
+          })
+        : [],
+    [occurrence, repeatEvery, repeatPattern, repeatWeekdays, repeats],
+  );
 
   useEffect(() => {
     if (!activeProjects.some((project) => project.id === selectedProjectId)) {
@@ -256,10 +283,32 @@ export function TaskForm({
 
         <div className="rounded-md border border-slate-200 p-3 lg:col-span-2">
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-            <input type="checkbox" name="repeats" defaultChecked={task?.repeats ?? false} className="size-4 rounded border-slate-300" />
+            <input
+              type="checkbox"
+              name="repeats"
+              checked={repeats}
+              onChange={(event) => setRepeats(event.target.checked)}
+              className="size-4 rounded border-slate-300"
+            />
             Lặp lại nhiệm vụ
           </label>
-          <div className="mt-3 grid gap-3 md:grid-cols-3">
+          <div className="mt-3 grid gap-3 md:grid-cols-4">
+            <label className="block md:col-span-2">
+              <span className="text-xs font-semibold uppercase text-slate-500">Kiểu lặp</span>
+              <select
+                name="repeatPattern"
+                value={repeatPattern}
+                onChange={(event) => setRepeatPattern(event.target.value as RepeatPattern)}
+                disabled={!repeats}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                {repeatPatterns.map((pattern) => (
+                  <option key={pattern.value} value={pattern.value}>
+                    {pattern.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="block">
               <span className="text-xs font-semibold uppercase text-slate-500">Mỗi</span>
               <input
@@ -267,33 +316,83 @@ export function TaskForm({
                 type="number"
                 min={1}
                 max={365}
-                defaultValue={task?.repeatEvery ?? 1}
-                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                value={repeatEvery}
+                onChange={(event) => setRepeatEvery(Number(event.target.value) || 1)}
+                disabled={!repeats}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400"
               />
             </label>
             <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Đơn vị</span>
-              <select
-                name="repeatUnit"
-                defaultValue={task?.repeatUnit ?? "day"}
-                className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-              >
-                {repeatUnits.map((unit) => (
-                  <option key={unit.value} value={unit.value}>
-                    {unit.label}
-                  </option>
-                ))}
-              </select>
+              <span className="text-xs font-semibold uppercase text-slate-500">Báo trước (ngày)</span>
+              <input type="hidden" name="repeatUnit" value="day" />
+              <input
+                name="repeatNoticeDays"
+                type="number"
+                min={0}
+                max={365}
+                value={repeatNoticeDays}
+                onChange={(event) => setRepeatNoticeDays(Number(event.target.value) || 0)}
+                disabled={!repeats}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400"
+              />
             </label>
             <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Ngày lặp</span>
+              <span className="text-xs font-semibold uppercase text-slate-500">Kỳ đầu tiên</span>
               <input
                 name="occurrence"
                 type="date"
-                defaultValue={dateInputValue(task?.occurrence ?? task?.startDate ?? task?.dueDate)}
-                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                value={occurrence}
+                onChange={(event) => setOccurrence(event.target.value)}
+                disabled={!repeats}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400"
               />
             </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Lặp đến ngày</span>
+              <input
+                name="repeatEndsAt"
+                type="date"
+                defaultValue={dateInputValue(task?.repeatEndsAt)}
+                disabled={!repeats}
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400"
+              />
+            </label>
+            {repeatPattern === "weekly" ? (
+              <div className="md:col-span-4">
+                <div className="text-xs font-semibold uppercase text-slate-500">Thứ trong tuần</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {repeatWeekdayOptions.map((weekday) => (
+                    <label
+                      key={weekday.value}
+                      className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                    >
+                      <input
+                        type="checkbox"
+                        name="repeatWeekdays"
+                        value={weekday.value}
+                        checked={repeatWeekdays.has(weekday.value)}
+                        disabled={!repeats}
+                        onChange={(event) => {
+                          setRepeatWeekdays((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(weekday.value);
+                            else next.delete(weekday.value);
+                            return next;
+                          });
+                        }}
+                        className="size-4 rounded border-slate-300"
+                      />
+                      {weekday.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {recurrencePreview.length ? (
+              <div className="rounded-md bg-violet-50 px-3 py-2 text-sm text-violet-800 md:col-span-4">
+                Các kỳ gần nhất: {recurrencePreview.join(", ")}
+              </div>
+            ) : null}
           </div>
         </div>
 

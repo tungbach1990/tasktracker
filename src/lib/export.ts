@@ -22,6 +22,7 @@ import type {
 
 import { priorityLabel, taskKinds, workflowStatusLabels } from "@/lib/constants";
 import { dueExtendMetrics } from "@/lib/format";
+import { recurrenceSummary } from "@/lib/recurrence-utils";
 import { compareOperationalPriority } from "@/lib/task-priority";
 
 type TaskWithRelations = Task & {
@@ -114,7 +115,7 @@ function appendTaskMarkdown(
     `${detailIndent}- Người nhận việc: ${employees || "Chưa gán"}`,
     `${detailIndent}- Độ ưu tiên: ${priorityLabel(task.priority)}`,
     `${detailIndent}- Hạn: ${due}`,
-    `${detailIndent}- Lặp lại: ${task.repeats ? `mỗi ${task.repeatEvery} ${task.repeatUnit}` : "Không"}`,
+    `${detailIndent}- Lặp lại: ${task.repeats ? recurrenceSummary(task) : "Không"}`,
     `${detailIndent}- Lần lặp: ${task.occurrence ? task.occurrence.toISOString().slice(0, 10) : "Không có"}`,
     `${detailIndent}- Chuỗi lặp: ${task.seriesId ?? "Không có"}`,
     `${detailIndent}- Người tạo: ${task.createdBy.displayName || task.createdBy.username}`,

@@ -24,6 +24,8 @@ import { dateTime, shortDate } from "@/lib/format";
 import { canActAsDelegatedManager, canDeleteTask, canEditTask, canUpdateTaskExecution, canViewTask, hasPermission, requireActiveUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getLinkedEmployeeStatusContexts, getTaskReferenceData } from "@/lib/queries";
+import { ensureRecurringOccurrencesForVisibleTasks } from "@/lib/recurrence";
+import { buildRecurrenceMetaByTaskId, recurrenceSummary } from "@/lib/recurrence-utils";
 import { safeUserSelect } from "@/lib/safe-selects";
 import { compareOperationalPriority } from "@/lib/task-priority";
 
@@ -34,6 +36,7 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   const { id } = await params;
   const allowed = await canViewTask(user, id);
   if (!allowed) redirect("/dashboard");
+  await ensureRecurringOccurrencesForVisibleTasks(user);
   const canUpdate = await canUpdateTaskExecution(user, id);
   const canEdit = await canEditTask(user, id);
   const canDelete = await canDeleteTask(user, id);
@@ -119,6 +122,7 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   if (!task) notFound();
   task.children.sort(compareOperationalPriority);
   task.parent?.children.sort(compareOperationalPriority);
+  const recurrenceMetaByTaskId = buildRecurrenceMetaByTaskId([task, ...task.children]);
   const taskOwnerId = task.ownerId ?? task.createdById;
 
   const canEditTaskDetails = canEdit;
@@ -227,7 +231,7 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
               <Info label="Hạn hoàn thành" value={shortDate(task.dueDate)} />
               <Info
                 label="Lặp lại"
-                value={task.repeats ? `Mỗi ${task.repeatEvery} ${task.repeatUnit}` : "Không"}
+                value={task.repeats ? recurrenceSummary(task) : "Không"}
               />
               {task.repeats ? <Info label="Ngày lặp" value={shortDate(task.occurrence)} /> : null}
               <Info label="Hoàn thành" value={task.completedAt ? shortDate(task.completedAt) : "Chưa hoàn thành"} />
@@ -263,7 +267,14 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
             </div>
             <div className="grid gap-3">
               {task.children.map((child) => (
-                <TaskCard key={child.id} task={child} statuses={cardStatuses} compact canUpdate={canUpdate} />
+                <TaskCard
+                  key={child.id}
+                  task={child}
+                  statuses={cardStatuses}
+                  compact
+                  canUpdate={canUpdate}
+                  recurrenceMeta={recurrenceMetaByTaskId.get(child.id)}
+                />
               ))}
               {task.children.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-500">

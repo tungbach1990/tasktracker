@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { PrismaClient, type RepeatUnit, type TaskType } from "@prisma/client";
+import { PrismaClient, type RepeatPattern, type RepeatUnit, type TaskType } from "@prisma/client";
 
 loadDotEnv(path.resolve(process.cwd(), ".env"));
 
@@ -39,6 +39,10 @@ type ParsedTask = {
   repeats: boolean;
   repeatEvery: number;
   repeatUnit: RepeatUnit;
+  repeatPattern: RepeatPattern;
+  repeatWeekdays: number[];
+  repeatEndsAt: Date | null;
+  repeatNoticeDays: number;
   seriesId: string | null;
   occurrence: Date | null;
   childTasks: Array<{
@@ -159,6 +163,10 @@ async function main() {
             repeats: task.repeats,
             repeatEvery: task.repeatEvery,
             repeatUnit: task.repeatUnit,
+            repeatPattern: task.repeatPattern,
+            repeatWeekdays: task.repeatWeekdays,
+            repeatEndsAt: task.repeatEndsAt,
+            repeatNoticeDays: task.repeatNoticeDays,
             seriesId: task.seriesId,
             occurrence: task.occurrence,
             completedAt,
@@ -201,6 +209,10 @@ async function main() {
           repeats: task.repeats,
           repeatEvery: task.repeatEvery,
           repeatUnit: task.repeatUnit,
+          repeatPattern: task.repeatPattern,
+          repeatWeekdays: task.repeatWeekdays,
+          repeatEndsAt: task.repeatEndsAt,
+          repeatNoticeDays: task.repeatNoticeDays,
           seriesId: task.seriesId,
           occurrence: task.occurrence,
           completedAt,
@@ -531,6 +543,10 @@ async function parseTaskFile(
   const repeats = parseBoolean(frontmatter.work_task_repeats);
   const repeatEvery = Math.max(1, Number.parseInt(frontmatter.work_task_every || "1", 10) || 1);
   const repeatUnit = parseRepeatUnit(frontmatter.work_task_unit);
+  const repeatPattern = parseRepeatPattern(frontmatter.work_task_repeat_pattern, repeatUnit);
+  const repeatWeekdays = parseWeekdays(frontmatter.work_task_repeat_weekdays);
+  const repeatEndsAt = dateFromKey(frontmatter.work_task_repeat_ends_at);
+  const repeatNoticeDays = clampInt(frontmatter.work_task_repeat_notice_days, 7, 0, 365);
   const occurrence = dateFromKey(frontmatter.work_task_occurrence) || (repeats ? startDate || dueDate : null);
   const dueHistory = parseDueHistory(frontmatter.work_task_due_history);
   const seriesId = frontmatter.work_task_series_id?.trim() || null;
@@ -559,6 +575,10 @@ async function parseTaskFile(
     repeats,
     repeatEvery,
     repeatUnit,
+    repeatPattern,
+    repeatWeekdays,
+    repeatEndsAt,
+    repeatNoticeDays,
     seriesId,
     occurrence,
     childTasks,
@@ -839,6 +859,40 @@ function parseDueHistory(value: string | undefined) {
 function parseRepeatUnit(value: string | undefined): RepeatUnit {
   if (value === "week" || value === "month") return value;
   return "day";
+}
+
+function parseRepeatPattern(value: string | undefined, repeatUnit: RepeatUnit): RepeatPattern {
+  if (
+    value === "daily" ||
+    value === "weekdays" ||
+    value === "weekly" ||
+    value === "monthly" ||
+    value === "quarterly" ||
+    value === "yearly"
+  ) {
+    return value;
+  }
+  if (repeatUnit === "week") return "weekly";
+  if (repeatUnit === "month") return "monthly";
+  return "daily";
+}
+
+function parseWeekdays(value: string | undefined) {
+  if (!value) return [];
+  return Array.from(
+    new Set(
+      value
+        .split(/[,;\s]+/)
+        .map((item) => Number.parseInt(item, 10))
+        .filter((item) => Number.isInteger(item) && item >= 0 && item <= 6),
+    ),
+  ).sort((left, right) => (left === 0 ? 7 : left) - (right === 0 ? 7 : right));
+}
+
+function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function parseBoolean(value: string | undefined) {

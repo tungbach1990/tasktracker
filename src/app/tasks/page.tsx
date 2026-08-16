@@ -1,8 +1,7 @@
 import Link from "next/link";
 import type { Prisma, TaskPriority } from "@prisma/client";
-import { Plus, Repeat2 } from "lucide-react";
+import { Plus } from "lucide-react";
 
-import { generateRecurringTasksAction } from "@/app/actions/tasks";
 import { AppShell } from "@/components/shell";
 import { PageHeader } from "@/components/page-header";
 import { TaskCard } from "@/components/task-card";
@@ -12,6 +11,8 @@ import { priorities } from "@/lib/constants";
 import { hasPermission, requireActiveUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getLinkedEmployeeStatusContexts, getTaskDelegationContexts, getTaskReferenceData, taskScopeWhere } from "@/lib/queries";
+import { ensureRecurringOccurrencesForVisibleTasks } from "@/lib/recurrence";
+import { buildRecurrenceMetaByTaskId } from "@/lib/recurrence-utils";
 import { compareOperationalPriority } from "@/lib/task-priority";
 import { getDirectReportLookup } from "@/lib/team";
 
@@ -27,8 +28,6 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
   const employee = typeof params.employee === "string" ? params.employee : typeof params.assignee === "string" ? params.assignee : "";
   const owner = typeof params.owner === "string" ? params.owner : "";
   const scope = typeof params.scope === "string" ? params.scope : "";
-  const includeChildren = params.includeChildren === "1";
-  const recurringCreated = typeof params.recurring === "string" ? Number(params.recurring) : null;
   const canViewAll = hasPermission(user, "task.view.all");
   const canViewTeam = hasPermission(user, "team.view.downline");
   const canCreateOwnTask = hasPermission(user, "task.create");
@@ -67,10 +66,11 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
         .map(([userId]) => userId)
     : [];
   const baseWhere = await taskScopeWhere(user, scope);
+  await ensureRecurringOccurrencesForVisibleTasks(user, baseWhere);
   const where: Prisma.TaskWhereInput = {
     AND: [
       baseWhere,
-      includeChildren ? {} : { parentId: null },
+      { parentId: null },
       (canViewAll || canViewTeam) && owner
         ? {
             OR: [
@@ -116,6 +116,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
   for (const task of tasks) {
     task.children.sort(compareOperationalPriority);
   }
+  const recurrenceMetaByTaskId = buildRecurrenceMetaByTaskId(tasks);
   const cardStatuses = await prisma.taskStatusOption.findMany({
     where: { ownerId: { in: Array.from(new Set([user.id, ...tasks.map((task) => task.ownerId ?? task.createdById)])) } },
     orderBy: [{ ownerId: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
@@ -138,15 +139,6 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
         actions={
           canCreate ? (
             <>
-              <form action={generateRecurringTasksAction}>
-                <button
-                  type="submit"
-                  className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  <Repeat2 size={16} aria-hidden="true" />
-                  Tạo nhiệm vụ lặp
-                </button>
-              </form>
               {!showNew ? (
                 <Link
                   href="/tasks?new=1"
@@ -160,12 +152,6 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
           ) : null
         }
       />
-
-      {Number.isFinite(recurringCreated) ? (
-        <div className="mb-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-          Đã tạo {recurringCreated} nhiệm vụ lặp lại đến hạn.
-        </div>
-      ) : null}
 
       {showNew && canCreate ? (
         <section className="mb-6">
@@ -230,10 +216,6 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
             </option>
           ))}
         </select>
-        <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 px-3 text-sm text-slate-700">
-          <input type="checkbox" name="includeChildren" value="1" defaultChecked={includeChildren} className="size-4 rounded border-slate-300" />
-          Gá»“m nhiá»‡m vá»¥ con
-        </label>
         <button type="submit" className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800">
           Lọc
         </button>
@@ -253,6 +235,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
               statuses={cardStatuses}
               canUpdate={canUpdate}
               teamRollupLabel={directReportLabelByTaskId.get(task.id)}
+              recurrenceMeta={recurrenceMetaByTaskId.get(task.id)}
             />
           ))
         ) : (
