@@ -136,7 +136,7 @@ export function ChildTaskForm({
                 }}
                 className="size-4 rounded border-slate-300"
               />
-              <span>{employee.name}</span>
+              <span>{employee.linkedUser?.username ? `${employee.name} (@${employee.linkedUser.username})` : employee.name}</span>
             </label>
           ))}
           {visibleEmployees.length === 0 ? (

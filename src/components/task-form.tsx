@@ -19,6 +19,10 @@ type TaskForForm =
     })
   | null;
 
+function employeeLabel(employee: EmployeeForForm) {
+  return employee.linkedUser?.username ? `${employee.name} (@${employee.linkedUser.username})` : employee.name;
+}
+
 export type TaskActingContext = {
   owner: { id: string; username: string; displayName: string };
   canChooseProject: boolean;
@@ -328,7 +332,7 @@ export function TaskForm({
                   className="size-4 rounded border-slate-300"
                 />
                 <span>
-                  {employee.name}
+                  {employeeLabel(employee)}
                   {outOfSelectedProject ? (
                     <span className="ml-1 text-xs text-amber-600">(ngoài dự án đang chọn)</span>
                   ) : null}

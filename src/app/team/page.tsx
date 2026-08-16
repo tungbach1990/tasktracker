@@ -84,6 +84,17 @@ export default async function TeamPage() {
                   OR: [
                     { ownerId: { in: downlineIds } },
                     { ownerId: null, createdById: { in: downlineIds } },
+                    { performerId: { in: downlineIds } },
+                    {
+                      employees: {
+                        some: {
+                          employee: {
+                            linkedUserId: { in: downlineIds },
+                            linkStatus: "confirmed",
+                          },
+                        },
+                      },
+                    },
                   ],
                 },
               ],
@@ -92,6 +103,7 @@ export default async function TeamPage() {
               project: true,
               status: true,
               createdBy: { select: { id: true, username: true, displayName: true } },
+              employees: { include: { employee: { select: { linkedUserId: true, linkStatus: true } } } },
             },
             orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }],
           })
@@ -107,45 +119,43 @@ export default async function TeamPage() {
   });
   const delegatedSupport = await Promise.all(
     activeDelegations.map(async (delegation) => {
-      const delegatedDownlineIds = await getDownlineUserIds(delegation.managerId);
-      const delegatedUserIds = [delegation.managerId, ...delegatedDownlineIds];
-      const tasks = await prisma.task.findMany({
-        where: {
-          AND: [
-            { deletedAt: null },
-            { projectId: delegation.projectId },
-            downlineIds.length
-              ? {
-                  NOT: {
-                    OR: [
-                      { ownerId: { in: downlineIds } },
-                      { ownerId: null, createdById: { in: downlineIds } },
-                    ],
-                  },
-                }
-              : {},
-            {
-              OR: [
-                { ownerId: { in: delegatedUserIds } },
-                { ownerId: null, createdById: { in: delegatedUserIds } },
+      const [delegatedDownlineIds, assistantDownlineIds] = await Promise.all([
+        getDownlineUserIds(delegation.managerId),
+        getDownlineUserIds(user.id),
+      ]);
+      const excludedUserIds = new Set([user.id, ...assistantDownlineIds]);
+      const delegatedUserIds = [delegation.managerId, ...delegatedDownlineIds].filter(
+        (userId) => !excludedUserIds.has(userId),
+      );
+      const tasks = delegatedUserIds.length
+        ? await prisma.task.findMany({
+            where: {
+              AND: [
+                { deletedAt: null },
+                { projectId: delegation.projectId },
+                {
+                  OR: [
+                    { ownerId: { in: delegatedUserIds } },
+                    { ownerId: null, createdById: { in: delegatedUserIds } },
+                  ],
+                },
               ],
             },
-          ],
-        },
-        include: {
-          project: true,
-          status: true,
-          createdBy: { select: { id: true, username: true, displayName: true } },
-        },
-        orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }],
-        take: 12,
-      });
+            include: {
+              project: true,
+              status: true,
+              createdBy: { select: { id: true, username: true, displayName: true } },
+            },
+            orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }],
+            take: 12,
+          })
+        : [];
       tasks.sort(compareOperationalPriority);
 
       return {
         manager: delegation.manager,
         project: delegation.project,
-        downlineCount: delegatedDownlineIds.length,
+        downlineCount: delegatedDownlineIds.filter((userId) => !excludedUserIds.has(userId)).length,
         tasks,
       };
     }),
@@ -160,10 +170,24 @@ export default async function TeamPage() {
 
   const tasksByUser = new Map<string, TeamTask[]>();
   for (const task of downlineTasks) {
-    const ownerId = task.ownerId ?? task.createdById;
-    const tasks = tasksByUser.get(ownerId) ?? [];
-    tasks.push(task);
-    tasksByUser.set(ownerId, tasks);
+    const displayUserIds = new Set<string>();
+    for (const assignment of task.employees ?? []) {
+      const linkedUserId = assignment.employee.linkedUserId;
+      if (linkedUserId && assignment.employee.linkStatus === "confirmed" && downlineIds.includes(linkedUserId)) {
+        displayUserIds.add(linkedUserId);
+      }
+    }
+    if (downlineIds.includes(task.performerId)) displayUserIds.add(task.performerId);
+    if (displayUserIds.size === 0) {
+      const ownerId = task.ownerId ?? task.createdById;
+      if (downlineIds.includes(ownerId)) displayUserIds.add(ownerId);
+    }
+
+    for (const userId of displayUserIds) {
+      const tasks = tasksByUser.get(userId) ?? [];
+      tasks.push(task);
+      tasksByUser.set(userId, tasks);
+    }
   }
 
   const directReports = childrenByManager.get(user.id) ?? [];
@@ -562,7 +586,9 @@ type TeamTask = {
   completedAt: Date | null;
   ownerId: string | null;
   createdById: string;
+  performerId: string;
   createdBy: { id: string; username: string; displayName: string };
+  employees?: Array<{ employee: { linkedUserId: string | null; linkStatus: string } }>;
   project: { name: string };
   status: { id: string; label: string; color: string; done: boolean };
 };

@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      DATABASE_URL: "postgresql://tasktracker:tasktracker@db:5432/tasktracker?schema=public"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-tasktracker}:${POSTGRES_PASSWORD:-tasktracker}@db:5432/${POSTGRES_DB:-tasktracker}?schema=public"
       AUTH_SECRET: "${AUTH_SECRET:-local-dev-secret-change-before-sharing}"
       AUTH_TRUST_HOST: "true"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
@@ -13,7 +13,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - task-tracker-exports:/app/exports
+      - /data/tasktracker/exports:/app/exports
     depends_on:
       db:
         condition: service_healthy
@@ -22,19 +22,13 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: tasktracker
-      POSTGRES_PASSWORD: tasktracker
-      POSTGRES_DB: tasktracker
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: "${POSTGRES_USER:-tasktracker}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-tasktracker}"
+      POSTGRES_DB: "${POSTGRES_DB:-tasktracker}"
     volumes:
-      - task-tracker-postgres:/var/lib/postgresql/data
+      - /data/tasktracker/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tasktracker -d tasktracker"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
-
-volumes:
-  task-tracker-postgres:
-  task-tracker-exports:

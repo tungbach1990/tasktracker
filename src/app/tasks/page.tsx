@@ -226,7 +226,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
           <option value="">Tất cả nhân viên</option>
           {employees.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.name}
+              {item.linkedUser?.username ? `${item.name} (@${item.linkedUser.username})` : item.name}
             </option>
           ))}
         </select>
