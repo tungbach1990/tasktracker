@@ -551,7 +551,7 @@ function ChildTaskForm({
           {visibleEmployees.map((employee) => (
             <label key={employee.id} className="flex min-h-10 items-center gap-2 rounded-md border border-slate-200 px-3 text-sm">
               <input type="checkbox" name="employeeIds" value={employee.id} className="size-4 rounded border-slate-300" />
-              <span>{employee.name}</span>
+              <span>{employee.linkedUser?.username ? `${employee.name} (@${employee.linkedUser.username})` : employee.name}</span>
             </label>
           ))}
           {visibleEmployees.length === 0 ? (
