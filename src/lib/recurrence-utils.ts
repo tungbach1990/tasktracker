@@ -66,7 +66,7 @@ export function recurringTaskSummary(
   const prefix = every > 1 ? `Mỗi ${every} ` : "";
   const endsAt = template.repeatEndsAt ? `, đến ${shortDate(template.repeatEndsAt)}` : "";
   const notice = `, báo trước ${Math.max(0, Math.trunc(template.repeatNoticeDays || 0))} ngày`;
-  const duration = `, thời lượng ${Math.max(0, Math.trunc(template.durationDays || 0))} ngày`;
+  const duration = `, thời lượng ${Math.max(1, Math.trunc(template.durationDays || 1))} ngày`;
   const anchorKey = dateKey(template.firstOccurrence) || dateKey(new Date());
 
   if (template.repeatPattern === "weekdays") return `${prefix}ngày làm việc${duration}${notice}${endsAt}`;
@@ -126,9 +126,10 @@ export function nextOccurrenceKey(
       weekdaysForPattern(options.repeatPattern, options.repeatWeekdays, anchorKey),
     );
   }
-  if (options.repeatPattern === "monthly") return addMonthsKey(currentKey, every);
-  if (options.repeatPattern === "quarterly") return addMonthsKey(currentKey, every * 3);
-  if (options.repeatPattern === "yearly") return addMonthsKey(currentKey, every * 12);
+  const anchorDay = dayOfMonth(anchorKey);
+  if (options.repeatPattern === "monthly") return addMonthsKey(currentKey, every, anchorDay);
+  if (options.repeatPattern === "quarterly") return addMonthsKey(currentKey, every * 3, anchorDay);
+  if (options.repeatPattern === "yearly") return addMonthsKey(currentKey, every * 12, anchorDay);
   return addDaysKey(currentKey, every);
 }
 
@@ -165,7 +166,7 @@ export function recurrencePreviewRanges(options: {
 }) {
   return recurrencePreviewKeys(options).map((startKey) => ({
     startKey,
-    dueKey: addDaysKey(startKey, Math.max(0, Math.trunc(options.durationDays || 0))) ?? startKey,
+    dueKey: addDaysKey(startKey, Math.max(1, Math.trunc(options.durationDays || 1))) ?? startKey,
   }));
 }
 
@@ -195,14 +196,15 @@ export function addDaysKey(dateText: string, days: number) {
   return dateKey(date);
 }
 
-export function addMonthsKey(dateText: string, months: number) {
+export function addMonthsKey(dateText: string, months: number, anchorDay?: number) {
   const [year, month, day] = dateText.split("-").map(Number);
   if (!year || !month || !day) return null;
 
   const targetMonthIndex = year * 12 + (month - 1) + months;
   const targetYear = Math.floor(targetMonthIndex / 12);
   const targetMonth = (targetMonthIndex % 12) + 1;
-  const clampedDay = Math.min(day, new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate());
+  const targetDay = anchorDay && anchorDay >= 1 && anchorDay <= 31 ? anchorDay : day;
+  const clampedDay = Math.min(targetDay, new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate());
 
   return [
     String(targetYear).padStart(4, "0"),
@@ -231,6 +233,11 @@ function weekdaysForPattern(pattern: RepeatPattern, repeatWeekdays: unknown, anc
   if (normalized.length) return normalized;
   const anchor = dateFromKey(anchorKey);
   return [anchor?.getUTCDay() ?? 1];
+}
+
+function dayOfMonth(dateText: string) {
+  const day = Number(dateText.split("-")[2]);
+  return Number.isInteger(day) && day >= 1 && day <= 31 ? day : undefined;
 }
 
 function parseWeekdayString(value: string) {

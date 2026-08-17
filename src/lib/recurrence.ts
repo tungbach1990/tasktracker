@@ -62,7 +62,8 @@ export async function materializeDueRecurringTasks(user: CurrentUser, today: Dat
       if (existingKeys.has(mapKey)) continue;
 
       const startDate = dateFromKey(occurrenceKey);
-      const dueDate = dateFromKey(addDaysKey(occurrenceKey, template.durationDays) ?? occurrenceKey);
+      const durationDays = Math.max(1, Math.trunc(template.durationDays || 1));
+      const dueDate = dateFromKey(addDaysKey(occurrenceKey, durationDays) ?? occurrenceKey);
       if (!startDate || !dueDate) continue;
 
       await ensureUserSettings(prisma, template.ownerId);
@@ -118,7 +119,7 @@ export async function materializeDueRecurringTasks(user: CurrentUser, today: Dat
                 after: {
                   recurringTaskId: template.id,
                   occurrenceDate: occurrenceKey,
-                  durationDays: template.durationDays,
+                  durationDays,
                 },
               },
             },

@@ -234,10 +234,10 @@ export function RecurringTaskForm({
           <input
             name="durationDays"
             type="number"
-            min={0}
+            min={1}
             max={3650}
             value={durationDays}
-            onChange={(event) => setDurationDays(Math.max(0, Number(event.target.value) || 0))}
+            onChange={(event) => setDurationDays(Math.max(1, Number(event.target.value) || 1))}
             className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           />
         </label>

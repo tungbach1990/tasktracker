@@ -183,7 +183,8 @@ function RecurringTaskCard({
 }) {
   const todayKey = dateKey(new Date());
   const nextKey = nextOccurrenceOnOrAfter(template);
-  const dueKey = nextKey ? addDaysKey(nextKey, template.durationDays) : null;
+  const durationDays = Math.max(1, Math.trunc(template.durationDays || 1));
+  const dueKey = nextKey ? addDaysKey(nextKey, durationDays) : null;
   const inNoticeWindow = template.active && !template.archivedAt && isRecurringTemplateInNoticeWindow(template);
   const dueToday = template.active && nextKey === todayKey;
   const employeeNames = template.employees.length

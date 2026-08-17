@@ -40,7 +40,7 @@ export const recurringTaskFormSchema = z.object({
   repeatPattern: z.nativeEnum(RepeatPattern).default(RepeatPattern.daily),
   repeatWeekdays: z.array(z.coerce.number().int().min(0).max(6)).default([]),
   firstOccurrence: z.string().min(1, "Cần chọn ngày bắt đầu chu kỳ"),
-  durationDays: z.coerce.number().int().min(0).max(3650).default(1),
+  durationDays: z.coerce.number().int().min(1).max(3650).default(1),
   repeatNoticeDays: z.coerce.number().int().min(0).max(365).default(7),
   repeatEndsAt: z.string().optional().default(""),
   active: z.boolean().default(true),
