@@ -43,11 +43,11 @@ export type ShellNavItem = {
 
 export function ShellNav({
   items,
-  approvalCount,
+  badgeCounts,
   variant,
 }: {
   items: readonly ShellNavItem[];
-  approvalCount: number;
+  badgeCounts: Record<string, number>;
   variant: "desktop" | "mobile";
 }) {
   const pathname = usePathname() ?? "";
@@ -60,7 +60,7 @@ export function ShellNav({
             key={item.href}
             item={item}
             active={isActiveRoute(pathname, item.href)}
-            approvalCount={approvalCount}
+            badgeCount={badgeCounts[item.href] ?? 0}
           />
         ))}
       </nav>
@@ -74,7 +74,7 @@ export function ShellNav({
           key={item.href}
           item={item}
           active={isActiveRoute(pathname, item.href)}
-          approvalCount={approvalCount}
+          badgeCount={badgeCounts[item.href] ?? 0}
         />
       ))}
     </nav>
@@ -84,14 +84,15 @@ export function ShellNav({
 function DesktopNavLink({
   item,
   active,
-  approvalCount,
+  badgeCount,
 }: {
   item: ShellNavItem;
   active: boolean;
-  approvalCount: number;
+  badgeCount: number;
 }) {
   const Icon = icons[item.iconKey];
-  const hasApprovalBadge = item.href === "/approvals" && approvalCount > 0;
+  const hasBadge = badgeCount > 0;
+  const hasApprovalBadge = item.href === "/approvals" && hasBadge;
 
   return (
     <Link
@@ -112,7 +113,7 @@ function DesktopNavLink({
         className={clsx(active ? "text-white" : hasApprovalBadge ? "text-amber-700" : "text-inherit")}
       />
       <span className="min-w-0 flex-1 truncate">{item.label}</span>
-      {hasApprovalBadge ? <ApprovalBadge count={approvalCount} active={active} /> : null}
+      {hasBadge ? <NavBadge count={badgeCount} active={active} tone={hasApprovalBadge ? "approval" : "default"} /> : null}
     </Link>
   );
 }
@@ -120,14 +121,15 @@ function DesktopNavLink({
 function MobileNavLink({
   item,
   active,
-  approvalCount,
+  badgeCount,
 }: {
   item: ShellNavItem;
   active: boolean;
-  approvalCount: number;
+  badgeCount: number;
 }) {
   const Icon = icons[item.iconKey];
-  const hasApprovalBadge = item.href === "/approvals" && approvalCount > 0;
+  const hasBadge = badgeCount > 0;
+  const hasApprovalBadge = item.href === "/approvals" && hasBadge;
 
   return (
     <Link
@@ -144,19 +146,23 @@ function MobileNavLink({
       title={item.label}
     >
       <Icon size={18} aria-hidden="true" />
-      {hasApprovalBadge ? <ApprovalBadge count={approvalCount} active={active} compact /> : null}
+      {hasBadge ? (
+        <NavBadge count={badgeCount} active={active} tone={hasApprovalBadge ? "approval" : "default"} compact />
+      ) : null}
       <span className="sr-only">{item.label}</span>
     </Link>
   );
 }
 
-function ApprovalBadge({
+function NavBadge({
   count,
   active,
+  tone,
   compact = false,
 }: {
   count: number;
   active: boolean;
+  tone: "approval" | "default";
   compact?: boolean;
 }) {
   return (
@@ -166,10 +172,16 @@ function ApprovalBadge({
         compact
           ? "absolute -right-1 -top-1 min-w-5 px-1 text-[10px] leading-5"
           : "min-w-6 px-1.5 py-0.5 text-[11px]",
-        active ? "bg-amber-400 text-slate-950" : "bg-amber-600 text-white",
+        tone === "approval"
+          ? active
+            ? "bg-amber-400 text-slate-950"
+            : "bg-amber-600 text-white"
+          : active
+            ? "bg-blue-200 text-blue-950"
+            : "bg-blue-100 text-blue-800",
       )}
     >
-      {formatApprovalBadge(count)}
+      {formatNavBadge(count)}
     </span>
   );
 }
@@ -178,6 +190,6 @@ function isActiveRoute(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function formatApprovalBadge(count: number) {
+function formatNavBadge(count: number) {
   return count > 99 ? "99+" : String(count);
 }

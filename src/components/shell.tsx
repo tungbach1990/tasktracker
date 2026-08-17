@@ -5,7 +5,9 @@ import { BarChart3, LogOut } from "lucide-react";
 import { logoutAction } from "@/app/actions/auth";
 import { ShellNav, type ShellNavItem } from "@/components/shell-nav";
 import { getApprovalQueueCountForUser } from "@/lib/approvals";
-import { hasPermission, type CurrentUser } from "@/lib/authz";
+import { hasPermission, taskAccessWhere, type CurrentUser } from "@/lib/authz";
+import { prisma } from "@/lib/prisma";
+import { recurringTaskAccessWhere } from "@/lib/recurrence";
 
 const navItems = [
   { href: "/dashboard", label: "Tổng quan", iconKey: "dashboard", permission: null },
@@ -34,7 +36,16 @@ export async function AppShell({
   fullHeight?: boolean;
   mainClassName?: string;
 }) {
-  const approvalCount = await getApprovalQueueCountForUser(user.id);
+  const [approvalCount, taskCount, recurringTaskCount] = await Promise.all([
+    getApprovalQueueCountForUser(user.id),
+    countActionableRootTasks(user),
+    countActiveRecurringTasks(user),
+  ]);
+  const badgeCounts = {
+    "/approvals": approvalCount,
+    "/tasks": taskCount,
+    "/recurring-tasks": recurringTaskCount,
+  };
   const visibleNav = navItems.reduce<ShellNavItem[]>((items, item) => {
     if (!item.permission || hasPermission(user, item.permission)) {
       items.push({ href: item.href, label: item.label, iconKey: item.iconKey });
@@ -54,13 +65,13 @@ export async function AppShell({
             <div className="text-xs text-slate-500">Hệ thống công việc nội bộ</div>
           </div>
         </div>
-        <ShellNav items={visibleNav} approvalCount={approvalCount} variant="desktop" />
+        <ShellNav items={visibleNav} badgeCounts={badgeCounts} variant="desktop" />
       </aside>
 
       <div className={clsx("lg:pl-64", fullHeight && "flex h-dvh min-h-0 flex-col overflow-hidden")}>
         <header className="sticky top-0 z-20 shrink-0 border-b border-slate-200 bg-white/95 backdrop-blur">
           <div className="flex min-h-16 flex-wrap items-center justify-between gap-3 px-4 py-3 lg:px-8">
-            <ShellNav items={visibleNav} approvalCount={approvalCount} variant="mobile" />
+            <ShellNav items={visibleNav} badgeCounts={badgeCounts} variant="mobile" />
 
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold">{user.displayName}</div>
@@ -90,4 +101,35 @@ export async function AppShell({
       </div>
     </div>
   );
+}
+
+async function countActionableRootTasks(user: CurrentUser) {
+  const accessWhere = await taskAccessWhere(user);
+  return prisma.task.count({
+    where: {
+      AND: [
+        accessWhere,
+        {
+          parentId: null,
+          workflowStatus: { in: ["active", "completion_rejected", "registration_rejected"] },
+        },
+      ],
+    },
+  });
+}
+
+async function countActiveRecurringTasks(user: CurrentUser) {
+  const accessWhere = await recurringTaskAccessWhere(user);
+  return prisma.recurringTask.count({
+    where: {
+      AND: [
+        accessWhere,
+        {
+          active: true,
+          archivedAt: null,
+          project: { active: true },
+        },
+      ],
+    },
+  });
 }
