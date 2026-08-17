@@ -4,9 +4,9 @@ import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-import { requirePermission } from "@/lib/authz";
+import { hasPermission, requirePermission, type CurrentUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { archiveGlobalProject, setUserCurrentProject } from "@/lib/projects";
+import { archiveGlobalProject, ensureGlobalDefaultProject, setUserCurrentProject } from "@/lib/projects";
 import { copyDefaultSettingsForUser } from "@/lib/settings";
 import { writeExportFile } from "@/lib/export-storage";
 import {
@@ -30,6 +30,25 @@ async function roleIdsWithMember(roleIds: string[]) {
   return Array.from(new Set(memberRole ? [...roleIds, memberRole.id] : roleIds));
 }
 
+async function projectIdForUserSave(
+  actor: CurrentUser,
+  submittedProjectId: string,
+  options: { defaultWhenMissing: boolean },
+) {
+  if (!hasPermission(actor, "project.manage")) return null;
+
+  if (!submittedProjectId) {
+    return options.defaultWhenMissing ? ensureGlobalDefaultProject(prisma) : null;
+  }
+
+  const project = await prisma.project.findFirst({
+    where: { id: submittedProjectId, active: true },
+    select: { id: true },
+  });
+  if (!project) redirect("/admin/users");
+  return project.id;
+}
+
 function revalidateAdminProjectViews() {
   revalidatePath("/admin/users");
   revalidatePath("/admin/projects");
@@ -40,7 +59,7 @@ function revalidateAdminProjectViews() {
 }
 
 export async function createUserAction(formData: FormData) {
-  await requirePermission("user.manage");
+  const actor = await requirePermission("user.manage");
   const data = userFormSchema.parse({
     username: formData.get("username"),
     displayName: formData.get("displayName"),
@@ -48,8 +67,10 @@ export async function createUserAction(formData: FormData) {
     enabled: formBoolean(formData, "enabled"),
     roleIds: formArray(formData, "roleIds"),
     projectIds: [],
+    projectId: formData.get("projectId") || "",
   });
   const roleIds = await roleIdsWithMember(data.roleIds);
+  const projectId = await projectIdForUserSave(actor, data.projectId, { defaultWhenMissing: true });
 
   const passwordHash = await bcrypt.hash(data.password, 12);
   const user = await prisma.user.create({
@@ -69,11 +90,12 @@ export async function createUserAction(formData: FormData) {
   });
 
   await copyDefaultSettingsForUser(prisma, user.id);
-  revalidatePath("/admin/users");
+  if (projectId) await setUserCurrentProject(prisma, user.id, projectId);
+  revalidateAdminProjectViews();
 }
 
 export async function updateUserAction(formData: FormData) {
-  await requirePermission("user.manage");
+  const actor = await requirePermission("user.manage");
   const data = updateUserFormSchema.parse({
     id: formData.get("id"),
     username: formData.get("username"),
@@ -81,8 +103,10 @@ export async function updateUserAction(formData: FormData) {
     enabled: formBoolean(formData, "enabled"),
     roleIds: formArray(formData, "roleIds"),
     projectIds: [],
+    projectId: formData.get("projectId") || "",
   });
   const roleIds = await roleIdsWithMember(data.roleIds);
+  const projectId = await projectIdForUserSave(actor, data.projectId, { defaultWhenMissing: false });
 
   await prisma.$transaction([
     prisma.userRole.deleteMany({ where: { userId: data.id } }),
@@ -103,9 +127,8 @@ export async function updateUserAction(formData: FormData) {
   ]);
 
   await copyDefaultSettingsForUser(prisma, data.id);
-  revalidatePath("/admin/users");
-  revalidatePath("/dashboard");
-  revalidatePath("/tasks");
+  if (projectId) await setUserCurrentProject(prisma, data.id, projectId);
+  revalidateAdminProjectViews();
 }
 
 export async function resetPasswordAction(formData: FormData) {

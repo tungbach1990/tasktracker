@@ -54,6 +54,7 @@ export const userFormSchema = z.object({
   enabled: z.boolean().default(true),
   roleIds: z.array(z.string()).default([]),
   projectIds: z.array(z.string()).default([]),
+  projectId: z.string().optional().default(""),
 });
 
 export const updateUserFormSchema = userFormSchema.omit({ password: true }).extend({

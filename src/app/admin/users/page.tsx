@@ -1,4 +1,4 @@
-import type { Role } from "@prisma/client";
+import type { Project, Role } from "@prisma/client";
 
 import {
   createUserAction,
@@ -6,7 +6,6 @@ import {
   updateUserAction,
 } from "@/app/actions/admin";
 import { PageHeader } from "@/components/page-header";
-import { UserProjectAssignmentPanel } from "@/components/project-admin";
 import { AppShell } from "@/components/shell";
 import { hasPermission, requirePermission } from "@/lib/authz";
 import { roleDisplayName } from "@/lib/constants";
@@ -41,12 +40,13 @@ export default async function UsersAdminPage() {
       <section className="mb-6 grid gap-6">
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="text-base font-semibold text-slate-950">Tạo người dùng</h2>
-          <UserForm action={createUserAction} roles={roles} />
+          <UserForm
+            action={createUserAction}
+            roles={roles}
+            activeProjects={activeProjects}
+            canManageProjects={canManageProjects}
+          />
         </div>
-
-        {canManageProjects ? (
-          <UserProjectAssignmentPanel users={users} activeProjects={activeProjects} />
-        ) : null}
       </section>
 
       <section className="grid gap-4">
@@ -68,7 +68,13 @@ export default async function UsersAdminPage() {
             </div>
 
             <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
-              <UserForm action={updateUserAction} user={user} roles={roles} />
+              <UserForm
+                action={updateUserAction}
+                user={user}
+                roles={roles}
+                activeProjects={activeProjects}
+                canManageProjects={canManageProjects}
+              />
               <form action={resetPasswordAction} className="rounded-md border border-slate-200 p-3">
                 <input type="hidden" name="id" value={user.id} />
                 <label className="block">
@@ -97,6 +103,8 @@ function UserForm({
   action,
   user,
   roles,
+  activeProjects,
+  canManageProjects,
 }: {
   action: (formData: FormData) => Promise<void>;
   user?: {
@@ -104,9 +112,12 @@ function UserForm({
     displayName: string;
     username: string;
     enabled: boolean;
+    currentProjectId?: string | null;
     roles?: Array<{ roleId: string }>;
   };
   roles: Role[];
+  activeProjects: Project[];
+  canManageProjects: boolean;
 }) {
   const roleIds = new Set(
     user?.roles?.map((item) => item.roleId) ??
@@ -122,6 +133,24 @@ function UserForm({
       </div>
       {!user ? (
         <input name="password" type="password" required minLength={8} placeholder="Mật khẩu ban đầu" className="h-10 rounded-md border border-slate-300 px-3 text-sm" />
+      ) : null}
+      {canManageProjects ? (
+        <label className="block">
+          <span className="text-xs font-semibold uppercase text-slate-500">Dự án hiện tại</span>
+          <select
+            name="projectId"
+            required
+            defaultValue={user?.currentProjectId ?? activeProjects[0]?.id ?? ""}
+            disabled={activeProjects.length === 0}
+            className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {activeProjects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
       ) : null}
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" name="enabled" defaultChecked={user?.enabled ?? true} className="size-4 rounded border-slate-300" />
