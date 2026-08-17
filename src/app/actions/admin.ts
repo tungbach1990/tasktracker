@@ -263,6 +263,7 @@ export async function runExportAction(formData: FormData) {
       project: true,
       status: true,
       parent: { select: { id: true, title: true } },
+      recurringTask: { select: { id: true, title: true } },
       createdBy: { select: { username: true, displayName: true } },
       updatedBy: { select: { username: true, displayName: true } },
       employees: {
@@ -315,6 +316,8 @@ export async function runExportAction(formData: FormData) {
           kanbanColumns: await prisma.kanbanColumnPreference.findMany({ orderBy: [{ ownerId: "asc" }, { sortOrder: "asc" }, { columnKey: "asc" }] }),
           teamRelations: await prisma.teamRelation.findMany({ orderBy: [{ managerId: "asc" }, { reportId: "asc" }] }),
           teamDelegations: await prisma.teamDelegation.findMany({ orderBy: [{ projectId: "asc" }, { managerId: "asc" }, { assistantId: "asc" }] }),
+          recurringTasks: await prisma.recurringTask.findMany({ orderBy: [{ projectId: "asc" }, { ownerId: "asc" }, { title: "asc" }] }),
+          recurringTaskEmployees: await prisma.recurringTaskEmployee.findMany({ orderBy: [{ recurringTaskId: "asc" }, { employeeId: "asc" }] }),
           taskApprovals: await prisma.taskApproval.findMany({ orderBy: [{ taskId: "asc" }, { type: "asc" }, { round: "asc" }, { level: "asc" }] }),
           tasks,
         });

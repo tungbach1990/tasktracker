@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { getManagerChain, isTaskFinalDone } from "@/lib/approvals";
 import { hasPermission, taskAccessWhere, type CurrentUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { ensureRecurringOccurrencesForVisibleTasks } from "@/lib/recurrence";
+import { materializeDueRecurringTasks } from "@/lib/recurrence";
 import { dashboardNumber, ensureUserSettings } from "@/lib/settings";
 import { compareOperationalPriority } from "@/lib/task-priority";
 import { getDownlineUserIds, hasActiveDelegation } from "@/lib/team";
@@ -62,13 +62,14 @@ export async function taskScopeWhere(user: CurrentUser, scope: string): Promise<
 export async function getDashboardData(user: CurrentUser) {
   await ensureUserSettings(prisma, user.id);
   const where = await visibleTaskWhere(user);
-  await ensureRecurringOccurrencesForVisibleTasks(user, where);
+  await materializeDueRecurringTasks(user);
 
   const [tasks, preferences] = await Promise.all([
     prisma.task.findMany({
       where: { AND: [where, { parentId: null }] },
       include: {
         project: true,
+        recurringTask: { select: { id: true, title: true } },
         status: true,
         createdBy: { select: { id: true, username: true, displayName: true } },
         parent: { select: { id: true, title: true } },

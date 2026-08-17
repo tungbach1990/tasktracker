@@ -1,4 +1,4 @@
-import type { RepeatPattern, RepeatUnit, TaskPriority, TaskWorkflowStatus } from "@prisma/client";
+import type { RepeatPattern, RepeatUnit } from "@prisma/client";
 
 import { dateFromKey, dateKey, shortDate } from "@/lib/format";
 
@@ -24,48 +24,14 @@ export const repeatWeekdayOptions = [
 const weekdayLabels: Map<number, string> = new Map(repeatWeekdayOptions.map((item) => [item.value, item.label]));
 const workdays = [1, 2, 3, 4, 5];
 
-export type RecurrenceTaskLike = {
-  id: string;
-  title: string;
-  repeats: boolean;
+export type RecurringTemplateLike = {
   repeatEvery: number;
-  repeatUnit: RepeatUnit;
   repeatPattern: RepeatPattern;
   repeatWeekdays: unknown;
+  firstOccurrence: Date | string | null;
   repeatEndsAt: Date | string | null;
   repeatNoticeDays: number;
-  seriesId: string | null;
-  occurrence: Date | string | null;
-  startDate?: Date | string | null;
-  dueDate?: Date | string | null;
-  workflowStatus: TaskWorkflowStatus;
-  completedAt?: Date | string | null;
-  priority?: TaskPriority;
-  status: { done: boolean; label?: string; color?: string };
-  children?: Array<{
-    workflowStatus: TaskWorkflowStatus;
-    completedAt?: Date | string | null;
-    status: { done: boolean };
-  }>;
-};
-
-export type RecurrenceInstanceMeta = {
-  id: string;
-  title: string;
-  occurrence: Date | string | null;
-  dueDate: Date | string | null;
-  workflowStatus: TaskWorkflowStatus;
-  status: { done: boolean; label?: string; color?: string };
-  finalDone: boolean;
-  childCount: number;
-  childDoneCount: number;
-};
-
-export type RecurrenceCardMeta = {
-  summary: string;
-  noticeDue: boolean;
-  overdueCount: number;
-  overdueInstances: RecurrenceInstanceMeta[];
+  durationDays: number;
 };
 
 export function normalizeRepeatWeekdays(value: unknown) {
@@ -90,24 +56,50 @@ export function legacyRepeatUnitForPattern(pattern: RepeatPattern): RepeatUnit {
   return "day";
 }
 
-export function recurrenceSummary(task: Pick<RecurrenceTaskLike, "repeats" | "repeatEvery" | "repeatPattern" | "repeatWeekdays" | "repeatEndsAt" | "repeatNoticeDays" | "occurrence">) {
-  if (!task.repeats) return "Không lặp";
-
-  const every = Math.max(1, Math.trunc(task.repeatEvery || 1));
+export function recurringTaskSummary(
+  template: Pick<
+    RecurringTemplateLike,
+    "repeatEvery" | "repeatPattern" | "repeatWeekdays" | "repeatEndsAt" | "repeatNoticeDays" | "firstOccurrence" | "durationDays"
+  >,
+) {
+  const every = Math.max(1, Math.trunc(template.repeatEvery || 1));
   const prefix = every > 1 ? `Mỗi ${every} ` : "";
-  const endsAt = task.repeatEndsAt ? `, đến ${shortDate(task.repeatEndsAt)}` : "";
-  const notice = `, báo trước ${Math.max(0, Math.trunc(task.repeatNoticeDays || 0))} ngày`;
+  const endsAt = template.repeatEndsAt ? `, đến ${shortDate(template.repeatEndsAt)}` : "";
+  const notice = `, báo trước ${Math.max(0, Math.trunc(template.repeatNoticeDays || 0))} ngày`;
+  const duration = `, thời lượng ${Math.max(0, Math.trunc(template.durationDays || 0))} ngày`;
+  const anchorKey = dateKey(template.firstOccurrence) || dateKey(new Date());
 
-  if (task.repeatPattern === "weekdays") return `${prefix}ngày làm việc${notice}${endsAt}`;
-  if (task.repeatPattern === "weekly") {
-    const weekdays = weekdaysForPattern(task.repeatPattern, task.repeatWeekdays, dateKey(task.occurrence) || dateKey(new Date()));
+  if (template.repeatPattern === "weekdays") return `${prefix}ngày làm việc${duration}${notice}${endsAt}`;
+  if (template.repeatPattern === "weekly") {
+    const weekdays = weekdaysForPattern(template.repeatPattern, template.repeatWeekdays, anchorKey);
     const weekdayText = weekdays.map((item) => weekdayLabels.get(item) ?? String(item)).join(", ");
-    return `${prefix}tuần vào ${weekdayText}${notice}${endsAt}`;
+    return `${prefix}tuần vào ${weekdayText}${duration}${notice}${endsAt}`;
   }
-  if (task.repeatPattern === "monthly") return `${prefix}tháng${notice}${endsAt}`;
-  if (task.repeatPattern === "quarterly") return `${prefix}quý${notice}${endsAt}`;
-  if (task.repeatPattern === "yearly") return `${prefix}năm${notice}${endsAt}`;
-  return `${prefix}ngày${notice}${endsAt}`;
+  if (template.repeatPattern === "monthly") return `${prefix}tháng${duration}${notice}${endsAt}`;
+  if (template.repeatPattern === "quarterly") return `${prefix}quý${duration}${notice}${endsAt}`;
+  if (template.repeatPattern === "yearly") return `${prefix}năm${duration}${notice}${endsAt}`;
+  return `${prefix}ngày${duration}${notice}${endsAt}`;
+}
+
+export function recurrenceSummary(task: {
+  repeats: boolean;
+  repeatEvery: number;
+  repeatPattern: RepeatPattern;
+  repeatWeekdays: unknown;
+  repeatEndsAt: Date | string | null;
+  repeatNoticeDays: number;
+  occurrence: Date | string | null;
+}) {
+  if (!task.repeats) return "Không lặp";
+  return recurringTaskSummary({
+    repeatEvery: task.repeatEvery,
+    repeatPattern: task.repeatPattern,
+    repeatWeekdays: task.repeatWeekdays,
+    repeatEndsAt: task.repeatEndsAt,
+    repeatNoticeDays: task.repeatNoticeDays,
+    firstOccurrence: task.occurrence,
+    durationDays: 0,
+  });
 }
 
 export function nextOccurrenceKey(
@@ -141,14 +133,15 @@ export function nextOccurrenceKey(
 }
 
 export function recurrencePreviewKeys(options: {
-  occurrence: Date | string | null | undefined;
+  firstOccurrence?: Date | string | null | undefined;
+  occurrence?: Date | string | null | undefined;
   repeatEvery: number;
   repeatPattern: RepeatPattern;
   repeatWeekdays: unknown;
   count?: number;
 }) {
   const keys: string[] = [];
-  const firstKey = dateKey(options.occurrence);
+  const firstKey = dateKey(options.firstOccurrence ?? options.occurrence);
   if (!firstKey) return keys;
 
   keys.push(firstKey);
@@ -162,71 +155,37 @@ export function recurrencePreviewKeys(options: {
   return keys;
 }
 
-export function isRecurringNoticeDue(task: RecurrenceTaskLike, today: Date = new Date()) {
-  if (!task.repeats || isFinalDoneLike(task)) return false;
-  const reference = occurrenceReferenceKey(task);
-  if (!reference) return false;
-
-  const cutoff = addDaysKey(dateKey(today), Math.max(0, Math.trunc(task.repeatNoticeDays || 0)));
-  return Boolean(cutoff && reference <= cutoff);
-}
-
-export function buildRecurrenceMetaByTaskId<T extends RecurrenceTaskLike>(tasks: T[], today: Date = new Date()) {
-  const result = new Map<string, RecurrenceCardMeta>();
-  const groups = new Map<string, T[]>();
-
-  for (const task of tasks) {
-    if (!task.repeats) continue;
-    result.set(task.id, {
-      summary: recurrenceSummary(task),
-      noticeDue: isRecurringNoticeDue(task, today),
-      overdueCount: 0,
-      overdueInstances: [],
-    });
-    if (task.seriesId) {
-      const group = groups.get(task.seriesId) ?? [];
-      group.push(task);
-      groups.set(task.seriesId, group);
-    }
-  }
-
-  const todayKey = dateKey(today);
-  for (const group of groups.values()) {
-    const overdue = group
-      .filter((task) => !isFinalDoneLike(task))
-      .filter((task) => {
-        const reference = occurrenceReferenceKey(task);
-        return Boolean(reference && reference < todayKey);
-      })
-      .sort(compareOccurrenceTasks);
-
-    if (overdue.length < 2) continue;
-    const representative = overdue[0];
-    const meta = result.get(representative.id);
-    if (!meta) continue;
-    meta.overdueCount = overdue.length;
-    meta.overdueInstances = overdue.map((task) => ({
-      id: task.id,
-      title: task.title,
-      occurrence: task.occurrence,
-      dueDate: task.dueDate ?? null,
-      workflowStatus: task.workflowStatus,
-      status: task.status,
-      finalDone: isFinalDoneLike(task),
-      childCount: task.children?.length ?? 0,
-      childDoneCount: task.children?.filter((child) => isFinalDoneLike(child)).length ?? 0,
-    }));
-  }
-
-  return result;
-}
-
-export function occurrenceReferenceKey(task: {
-  occurrence?: Date | string | null;
-  dueDate?: Date | string | null;
-  startDate?: Date | string | null;
+export function recurrencePreviewRanges(options: {
+  firstOccurrence: Date | string | null | undefined;
+  repeatEvery: number;
+  repeatPattern: RepeatPattern;
+  repeatWeekdays: unknown;
+  durationDays: number;
+  count?: number;
 }) {
-  return dateKey(task.occurrence) || dateKey(task.dueDate) || dateKey(task.startDate);
+  return recurrencePreviewKeys(options).map((startKey) => ({
+    startKey,
+    dueKey: addDaysKey(startKey, Math.max(0, Math.trunc(options.durationDays || 0))) ?? startKey,
+  }));
+}
+
+export function nextOccurrenceOnOrAfter(template: RecurringTemplateLike, target: Date | string = new Date()) {
+  const firstKey = dateKey(template.firstOccurrence);
+  const targetKey = dateKey(target);
+  const endsKey = dateKey(template.repeatEndsAt);
+  if (!firstKey || !targetKey) return null;
+  if (endsKey && firstKey > endsKey) return null;
+  if (firstKey >= targetKey) return firstKey;
+
+  let currentKey = firstKey;
+  for (let guard = 0; guard < 3660; guard += 1) {
+    const nextKey = nextOccurrenceKey(currentKey, { ...template, anchor: firstKey });
+    if (!nextKey || nextKey === currentKey) return null;
+    if (endsKey && nextKey > endsKey) return null;
+    if (nextKey >= targetKey) return nextKey;
+    currentKey = nextKey;
+  }
+  return null;
 }
 
 export function addDaysKey(dateText: string, days: number) {
@@ -257,6 +216,13 @@ export function daysBetweenKeys(left: string, right: string) {
   const rightDate = dateFromKey(right);
   if (!leftDate || !rightDate) return 0;
   return Math.round((rightDate.getTime() - leftDate.getTime()) / 86_400_000);
+}
+
+export function isRecurringTemplateInNoticeWindow(template: RecurringTemplateLike, today: Date = new Date()) {
+  const nextKey = nextOccurrenceOnOrAfter(template, today);
+  if (!nextKey) return false;
+  const cutoffKey = addDaysKey(dateKey(today), Math.max(0, Math.trunc(template.repeatNoticeDays || 0)));
+  return Boolean(cutoffKey && nextKey > dateKey(today) && nextKey <= cutoffKey);
 }
 
 function weekdaysForPattern(pattern: RepeatPattern, repeatWeekdays: unknown, anchorKey: string) {
@@ -296,14 +262,13 @@ function addWorkdays(dateText: string, every: number) {
 }
 
 function nextWeeklyOccurrence(currentKey: string, anchorKey: string, every: number, weekdays: number[]) {
-  const anchorWeekStart = weekStartKey(anchorKey);
   for (let offset = 1; offset <= 3660; offset += 1) {
     const candidate = addDaysKey(currentKey, offset);
     if (!candidate) return null;
     const candidateDate = dateFromKey(candidate);
     if (!candidateDate || !weekdays.includes(candidateDate.getUTCDay())) continue;
 
-    const weeksSinceAnchor = Math.floor(daysBetweenKeys(anchorWeekStart, weekStartKey(candidate)) / 7);
+    const weeksSinceAnchor = Math.floor(daysBetweenKeys(weekStartKey(anchorKey), weekStartKey(candidate)) / 7);
     if (weeksSinceAnchor >= 0 && weeksSinceAnchor % every === 0) return candidate;
   }
   return null;
@@ -316,12 +281,4 @@ function weekStartKey(dateText: string) {
   const diff = weekday === 0 ? -6 : 1 - weekday;
   date.setUTCDate(date.getUTCDate() + diff);
   return dateKey(date);
-}
-
-function compareOccurrenceTasks(left: RecurrenceTaskLike, right: RecurrenceTaskLike) {
-  return occurrenceReferenceKey(left).localeCompare(occurrenceReferenceKey(right)) || left.title.localeCompare(right.title);
-}
-
-function isFinalDoneLike(task: Pick<RecurrenceTaskLike, "workflowStatus">) {
-  return task.workflowStatus === "final_done";
 }

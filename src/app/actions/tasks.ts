@@ -2,7 +2,6 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { Prisma } from "@prisma/client";
 
 import {
   finalizeApprovalIfComplete,
@@ -24,9 +23,9 @@ import {
 } from "@/lib/authz";
 import { dateKey, parseDueHistory } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
-import { legacyRepeatUnitForPattern, normalizeRepeatWeekdays } from "@/lib/recurrence-utils";
+import { nonRecurringTaskPayload } from "@/lib/recurrence";
 import { ensureSelfEmployee, ensureUserSettings } from "@/lib/settings";
-import { childTaskFormSchema, formArray, formBoolean, idSchema, optionalDate, taskFormSchema } from "@/lib/validation";
+import { childTaskFormSchema, formArray, idSchema, optionalDate, taskFormSchema } from "@/lib/validation";
 
 function taskPayload(formData: FormData) {
   return taskFormSchema.parse({
@@ -42,14 +41,6 @@ function taskPayload(formData: FormData) {
     startDate: formData.get("startDate") || "",
     dueDate: formData.get("dueDate") || "",
     sortOrder: formData.get("sortOrder") || 100,
-    repeats: formBoolean(formData, "repeats"),
-    repeatEvery: formData.get("repeatEvery") || 1,
-    repeatUnit: formData.get("repeatUnit") || "day",
-    repeatPattern: formData.get("repeatPattern") || "daily",
-    repeatWeekdays: formArray(formData, "repeatWeekdays"),
-    repeatEndsAt: formData.get("repeatEndsAt") || "",
-    repeatNoticeDays: formData.get("repeatNoticeDays") || 7,
-    occurrence: formData.get("occurrence") || "",
     employeeIds: formArray(formData, "employeeIds"),
   });
 }
@@ -474,35 +465,6 @@ function buildDueHistory(previousDue: Date | null | undefined, nextDue: Date | n
   return history;
 }
 
-function recurrencePayload(data: TaskPayload, existingSeriesId?: string | null) {
-  if (!data.repeats) {
-    return {
-      repeats: false,
-      repeatEvery: 1,
-      repeatUnit: "day" as const,
-      repeatPattern: "daily" as const,
-      repeatWeekdays: Prisma.JsonNull,
-      repeatEndsAt: null,
-      repeatNoticeDays: 7,
-      seriesId: null,
-      occurrence: null,
-    };
-  }
-
-  const repeatWeekdays = normalizeRepeatWeekdays(data.repeatWeekdays);
-  return {
-    repeats: true,
-    repeatEvery: data.repeatEvery,
-    repeatUnit: legacyRepeatUnitForPattern(data.repeatPattern),
-    repeatPattern: data.repeatPattern,
-    repeatWeekdays: repeatWeekdays.length ? repeatWeekdays : Prisma.JsonNull,
-    repeatEndsAt: optionalDate(data.repeatEndsAt),
-    repeatNoticeDays: data.repeatNoticeDays,
-    seriesId: existingSeriesId || crypto.randomUUID(),
-    occurrence: optionalDate(data.occurrence) ?? optionalDate(data.startDate) ?? optionalDate(data.dueDate) ?? new Date(),
-  };
-}
-
 async function defaultOpenStatusId(ownerId: string) {
   const status = await firstStatusByDone(ownerId, false);
   if (!status) redirect("/settings/statuses");
@@ -553,7 +515,7 @@ export async function createTaskAction(formData: FormData) {
       startDate: optionalDate(data.startDate),
       dueDate: optionalDate(data.dueDate),
       sortOrder: data.sortOrder,
-      ...recurrencePayload(data),
+      ...nonRecurringTaskPayload(),
       completedAt: null,
       performerId,
       ownerId,
@@ -577,11 +539,6 @@ export async function createTaskAction(formData: FormData) {
             kind: data.kind,
             performerId,
             ownerId,
-            repeats: data.repeats,
-            repeatPattern: data.repeatPattern,
-            repeatWeekdays: data.repeatWeekdays,
-            repeatEndsAt: data.repeatEndsAt,
-            repeatNoticeDays: data.repeatNoticeDays,
             employeeIds,
           },
         },
@@ -648,15 +605,7 @@ export async function createChildTaskAction(formData: FormData) {
       dueDate,
       dueHistory: [],
       sortOrder: data.sortOrder,
-      repeats: false,
-      repeatEvery: 1,
-      repeatUnit: "day",
-      repeatPattern: "daily",
-      repeatWeekdays: Prisma.JsonNull,
-      repeatEndsAt: null,
-      repeatNoticeDays: 7,
-      seriesId: null,
-      occurrence: null,
+      ...nonRecurringTaskPayload(),
       completedAt: null,
       performerId: assignment.performerId,
       ownerId: assignment.ownerId,
@@ -753,7 +702,7 @@ export async function updateTaskAction(formData: FormData) {
         dueDate: nextDueDate,
         dueHistory,
         sortOrder: data.sortOrder,
-        ...recurrencePayload(data, previous.seriesId),
+        ...nonRecurringTaskPayload(),
         completedAt: status.done && previous.workflowStatus === "final_done" ? previous.completedAt : null,
         performerId: assignment.performerId,
         ownerId: assignment.ownerId,
@@ -782,14 +731,6 @@ export async function updateTaskAction(formData: FormData) {
           statusId: previous.statusId,
           priority: previous.priority,
           dueDate: dateKey(previous.dueDate),
-          repeats: previous.repeats,
-          repeatEvery: previous.repeatEvery,
-          repeatUnit: previous.repeatUnit,
-          repeatPattern: previous.repeatPattern,
-          repeatWeekdays: previous.repeatWeekdays,
-          repeatEndsAt: dateKey(previous.repeatEndsAt),
-          repeatNoticeDays: previous.repeatNoticeDays,
-          occurrence: dateKey(previous.occurrence),
           employeeIds: previous.employees.map((employee) => employee.employeeId),
         },
         after: {
@@ -802,14 +743,6 @@ export async function updateTaskAction(formData: FormData) {
           statusId: data.statusId,
           priority: data.priority,
           dueDate: dateKey(nextDueDate),
-          repeats: data.repeats,
-          repeatEvery: data.repeatEvery,
-          repeatUnit: legacyRepeatUnitForPattern(data.repeatPattern),
-          repeatPattern: data.repeatPattern,
-          repeatWeekdays: data.repeatWeekdays,
-          repeatEndsAt: data.repeatEndsAt,
-          repeatNoticeDays: data.repeatNoticeDays,
-          occurrence: data.repeats ? data.occurrence : "",
           employeeIds: assignment.employeeIds,
         },
       },

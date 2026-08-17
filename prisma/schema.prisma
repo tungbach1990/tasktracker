@@ -117,6 +117,11 @@ model User {
   taskHistoryOnBehalfOf TaskHistory[] @relation("TaskHistoryOnBehalfOf")
   taskApprovals  TaskApproval[] @relation("TaskApprovalReviewer")
   delegatedApprovals TaskApproval[] @relation("TaskApprovalDelegatedFor")
+  createdRecurringTasks RecurringTask[] @relation("RecurringTaskCreatedBy")
+  updatedRecurringTasks RecurringTask[] @relation("RecurringTaskUpdatedBy")
+  ownedRecurringTasks RecurringTask[] @relation("RecurringTaskOwnedBy")
+  performedRecurringTasks RecurringTask[] @relation("RecurringTaskPerformedBy")
+  recurringTaskOnBehalfOf RecurringTask[] @relation("RecurringTaskOnBehalfOf")
   exportJobs     ExportJob[]
   teamReports    TeamRelation[] @relation("TeamManager")
   teamManagers   TeamRelation[] @relation("TeamReport")
@@ -180,6 +185,7 @@ model Project {
   updatedAt   DateTime @updatedAt
 
   tasks   Task[]
+  recurringTasks RecurringTask[]
   members UserProject[]
   currentForUsers User[] @relation("CurrentProject")
   employees EmployeeProject[]
@@ -239,6 +245,7 @@ model Employee {
   tasks TaskEmployee[]
   teamRelations TeamRelation[]
   projects EmployeeProject[]
+  recurringTasks RecurringTaskEmployee[]
 
   @@unique([ownerId, key])
   @@index([ownerId, active])
@@ -314,6 +321,8 @@ model Task {
   repeatNoticeDays Int     @default(7)
   seriesId    String?
   occurrence  DateTime?
+  recurringTaskId String?
+  recurrenceOccurrence DateTime?
   completedAt DateTime?
   deletedAt   DateTime?
   createdAt   DateTime     @default(now())
@@ -340,6 +349,7 @@ model Task {
   comments  TaskComment[]
   history   TaskHistory[]
   approvals TaskApproval[]
+  recurringTask RecurringTask? @relation(fields: [recurringTaskId], references: [id], onDelete: SetNull)
 
   @@index([projectId, statusId])
   @@index([parentId])
@@ -349,9 +359,63 @@ model Task {
   @@index([workflowStatus])
   @@index([createdById, taskType])
   @@index([seriesId, occurrence])
+  @@index([recurringTaskId])
+  @@unique([recurringTaskId, recurrenceOccurrence])
   @@index([createdById])
   @@index([deletedAt])
   @@index([dueDate])
+}
+
+model RecurringTask {
+  id               String        @id @default(cuid())
+  title            String
+  description      String        @default("")
+  priority         TaskPriority  @default(normal)
+  repeatEvery      Int           @default(1)
+  repeatUnit       RepeatUnit    @default(day)
+  repeatPattern    RepeatPattern @default(daily)
+  repeatWeekdays   Json?
+  firstOccurrence  DateTime
+  repeatEndsAt     DateTime?
+  repeatNoticeDays Int           @default(7)
+  durationDays     Int           @default(1)
+  active           Boolean       @default(true)
+  archivedAt       DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  projectId    String
+  ownerId      String
+  performerId  String
+  createdById  String
+  updatedById  String?
+  onBehalfOfId String?
+
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner       User    @relation("RecurringTaskOwnedBy", fields: [ownerId], references: [id], onDelete: Cascade)
+  performer   User    @relation("RecurringTaskPerformedBy", fields: [performerId], references: [id], onDelete: Cascade)
+  createdBy   User    @relation("RecurringTaskCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  updatedBy   User?   @relation("RecurringTaskUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  onBehalfOf  User?   @relation("RecurringTaskOnBehalfOf", fields: [onBehalfOfId], references: [id], onDelete: SetNull)
+  employees   RecurringTaskEmployee[]
+  tasks       Task[]
+
+  @@index([projectId, active])
+  @@index([ownerId, active])
+  @@index([performerId])
+  @@index([createdById])
+  @@index([onBehalfOfId])
+}
+
+model RecurringTaskEmployee {
+  recurringTaskId String
+  employeeId      String
+
+  recurringTask RecurringTask @relation(fields: [recurringTaskId], references: [id], onDelete: Cascade)
+  employee      Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@id([recurringTaskId, employeeId])
+  @@index([employeeId])
 }
 
 model TaskApproval {

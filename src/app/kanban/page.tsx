@@ -9,8 +9,7 @@ import { hasPermission, requireActiveUser } from "@/lib/authz";
 import { kanbanColumnWidth, workflowStatusLabels } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 import { taskScopeWhere } from "@/lib/queries";
-import { ensureRecurringOccurrencesForVisibleTasks } from "@/lib/recurrence";
-import { isRecurringNoticeDue } from "@/lib/recurrence-utils";
+import { materializeDueRecurringTasks } from "@/lib/recurrence";
 import { clampKanbanWidth, ensureKanbanSettings } from "@/lib/settings";
 import { compareOperationalPriority } from "@/lib/task-priority";
 
@@ -25,7 +24,7 @@ export default async function KanbanPage({ searchParams }: { searchParams: Searc
   const canViewTeam = hasPermission(user, "team.view.downline");
   const canViewAll = hasPermission(user, "task.view.all");
   const where = await taskScopeWhere(user, scope);
-  await ensureRecurringOccurrencesForVisibleTasks(user, where);
+  await materializeDueRecurringTasks(user);
 
   const tasks = await prisma.task.findMany({
     where,
@@ -85,7 +84,6 @@ export default async function KanbanPage({ searchParams }: { searchParams: Searc
     ownerId: task.ownerId ?? task.createdById,
     columnKey: columnKeyForTask(task),
     finalDone: isTaskFinalDone(task),
-    recurrenceNoticeDue: isRecurringNoticeDue(task),
     childCount: task.children.length,
     childDoneCount: task.children.filter((child) => isTaskFinalDone(child)).length,
   }));

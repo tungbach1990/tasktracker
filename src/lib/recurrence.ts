@@ -1,278 +1,294 @@
-import type { Prisma } from "@prisma/client";
-import { Prisma as PrismaRuntime } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
-import { firstOpenStatusId, isTaskFinalDone } from "@/lib/approvals";
-import { taskAccessWhere, type CurrentUser } from "@/lib/authz";
+import { firstOpenStatusId } from "@/lib/approvals";
+import { hasPermission, type CurrentUser } from "@/lib/authz";
 import { dateFromKey, dateKey } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
-import {
-  addDaysKey,
-  daysBetweenKeys,
-  legacyRepeatUnitForPattern,
-  nextOccurrenceKey,
-  normalizeRepeatWeekdays,
-  occurrenceReferenceKey,
-} from "@/lib/recurrence-utils";
+import { addDaysKey, legacyRepeatUnitForPattern, nextOccurrenceKey } from "@/lib/recurrence-utils";
+import { ensureUserSettings } from "@/lib/settings";
+import { getActiveDelegationsForAssistant, getDownlineUserIds } from "@/lib/team";
 
-export const recurrenceCreateCap = 30;
+export const recurrenceMaterializeCap = 30;
 
-type RecurringSeed = Prisma.TaskGetPayload<{
-  include: {
-    status: true;
-    employees: true;
-  };
-}>;
+export async function materializeDueRecurringTasks(user: CurrentUser, today: Date = new Date()) {
+  const todayKey = dateKey(today);
+  const todayDate = dateFromKey(todayKey);
+  if (!todayDate) return { created: 0 };
 
-export async function ensureRecurringOccurrencesForVisibleTasks(
-  user: CurrentUser,
-  accessWhere?: Prisma.TaskWhereInput,
-) {
-  const visibleWhere = accessWhere ?? (await taskAccessWhere(user));
-  const visibleSeeds = await prisma.task.findMany({
+  const accessWhere = await recurringTaskAccessWhere(user);
+  const templates = await prisma.recurringTask.findMany({
     where: {
       AND: [
-        visibleWhere,
+        accessWhere,
         {
-          deletedAt: null,
-          parentId: null,
-          repeats: true,
-          seriesId: { not: null },
-          occurrence: { not: null },
+          active: true,
+          archivedAt: null,
+          firstOccurrence: { lte: todayDate },
+          project: { active: true },
         },
       ],
     },
-    select: { seriesId: true },
-  });
-
-  const seriesIds = Array.from(
-    new Set(
-      visibleSeeds
-        .map((task) => task.seriesId)
-        .filter((seriesId): seriesId is string => Boolean(seriesId)),
-    ),
-  );
-  if (seriesIds.length === 0) return 0;
-
-  const seriesTasks = await prisma.task.findMany({
-    where: {
-      deletedAt: null,
-      parentId: null,
-      repeats: true,
-      seriesId: { in: seriesIds },
-      occurrence: { not: null },
-    },
     include: {
-      status: true,
       employees: true,
     },
-    orderBy: [{ seriesId: "asc" }, { occurrence: "asc" }, { createdAt: "asc" }],
+    orderBy: [{ firstOccurrence: "asc" }, { createdAt: "asc" }],
   });
 
-  const tasksBySeries = new Map<string, RecurringSeed[]>();
-  for (const task of seriesTasks) {
-    if (!task.seriesId) continue;
-    const group = tasksBySeries.get(task.seriesId) ?? [];
-    group.push(task);
-    tasksBySeries.set(task.seriesId, group);
-  }
+  if (templates.length === 0) return { created: 0 };
 
-  const todayKey = dateKey(new Date());
+  const existingTasks = await prisma.task.findMany({
+    where: {
+      recurringTaskId: { in: templates.map((template) => template.id) },
+      recurrenceOccurrence: { not: null },
+    },
+    select: { recurringTaskId: true, recurrenceOccurrence: true },
+  });
+  const existingKeys = new Set(
+    existingTasks
+      .map((task) =>
+        task.recurringTaskId && task.recurrenceOccurrence
+          ? recurrenceTaskOccurrenceKey(task.recurringTaskId, dateKey(task.recurrenceOccurrence))
+          : "",
+      )
+      .filter(Boolean),
+  );
+
   let created = 0;
+  for (const template of templates) {
+    const occurrenceKeys = dueOccurrenceKeys(template, todayKey);
+    for (const occurrenceKey of occurrenceKeys) {
+      if (created >= recurrenceMaterializeCap) return { created };
+      const mapKey = recurrenceTaskOccurrenceKey(template.id, occurrenceKey);
+      if (existingKeys.has(mapKey)) continue;
 
-  for (const [seriesId, tasks] of tasksBySeries) {
-    if (created >= recurrenceCreateCap || tasks.length === 0) break;
-    const anchor = tasks[0];
-    const existingByOccurrence = new Map(
-      tasks
-        .filter((task) => task.occurrence)
-        .map((task) => [`${seriesId}:${dateKey(task.occurrence)}`, task] as const),
-    );
-    let seed = tasks[tasks.length - 1];
+      const startDate = dateFromKey(occurrenceKey);
+      const dueDate = dateFromKey(addDaysKey(occurrenceKey, template.durationDays) ?? occurrenceKey);
+      if (!startDate || !dueDate) continue;
 
-    for (let guard = 0; guard < recurrenceCreateCap && created < recurrenceCreateCap; guard += 1) {
-      if (!seed.occurrence) break;
-      const nextKey = nextOccurrenceKey(seed.occurrence, {
-        repeatEvery: seed.repeatEvery,
-        repeatPattern: seed.repeatPattern,
-        repeatWeekdays: seed.repeatWeekdays,
-        anchor: anchor.occurrence,
-      });
-      if (!nextKey) break;
+      await ensureUserSettings(prisma, template.ownerId);
+      const statusId = await firstOpenStatusId(template.ownerId);
+      if (!statusId) continue;
 
-      const repeatEndsAtKey = dateKey(seed.repeatEndsAt);
-      if (repeatEndsAtKey && nextKey > repeatEndsAtKey) break;
-
-      const noticeCutoffKey = addDaysKey(todayKey, Math.max(0, Math.trunc(seed.repeatNoticeDays || 0))) ?? todayKey;
-      const shouldCreate = isTaskFinalDone(seed) || nextKey <= noticeCutoffKey;
-      if (!shouldCreate) break;
-
-      const existing = existingByOccurrence.get(`${seriesId}:${nextKey}`);
-      if (existing) {
-        seed = existing;
-        continue;
-      }
-
-      const openStatusId = await firstOpenStatusId(taskOwnerId(seed));
-      if (!openStatusId) break;
-
-      const nextOccurrence = dateFromKey(nextKey);
-      const createdTask = await prisma.task.create({
-        data: {
-          title: seed.title,
-          description: seed.description,
-          result: "",
-          feedback: "",
-          taskType: seed.taskType,
-          kind: seed.kind,
-          workflowStatus: "active",
-          parentId: null,
-          projectId: seed.projectId,
-          statusId: openStatusId,
-          priority: seed.priority,
-          startDate: shiftDateByOccurrence(seed.startDate, seed.occurrence, nextKey),
-          dueDate: shiftDateByOccurrence(seed.dueDate, seed.occurrence, nextKey),
-          dueHistory: [],
-          sortOrder: seed.sortOrder,
-          repeats: true,
-          repeatEvery: seed.repeatEvery,
-          repeatUnit: legacyRepeatUnitForPattern(seed.repeatPattern),
-          repeatPattern: seed.repeatPattern,
-          repeatWeekdays: repeatWeekdaysInput(seed.repeatWeekdays),
-          repeatEndsAt: seed.repeatEndsAt,
-          repeatNoticeDays: seed.repeatNoticeDays,
-          seriesId,
-          occurrence: nextOccurrence,
-          completedAt: null,
-          performerId: seed.performerId,
-          ownerId: taskOwnerId(seed),
-          createdById: seed.createdById,
-          updatedById: user.id,
-          employees: {
-            createMany: {
-              data: seed.employees.map((employee) => ({ employeeId: employee.employeeId })),
-              skipDuplicates: true,
+      try {
+        await prisma.task.create({
+          data: {
+            title: template.title,
+            description: template.description,
+            result: "",
+            feedback: "",
+            taskType: "big",
+            kind: "assigned",
+            workflowStatus: "active",
+            parentId: null,
+            projectId: template.projectId,
+            statusId,
+            priority: template.priority,
+            startDate,
+            dueDate,
+            dueHistory: [],
+            sortOrder: 100,
+            repeats: false,
+            repeatEvery: 1,
+            repeatUnit: "day",
+            repeatPattern: "daily",
+            repeatWeekdays: Prisma.JsonNull,
+            repeatEndsAt: null,
+            repeatNoticeDays: 7,
+            seriesId: null,
+            occurrence: null,
+            recurringTaskId: template.id,
+            recurrenceOccurrence: startDate,
+            completedAt: null,
+            deletedAt: null,
+            performerId: template.performerId,
+            ownerId: template.ownerId,
+            createdById: template.createdById,
+            updatedById: template.updatedById ?? template.createdById,
+            employees: {
+              createMany: {
+                data: template.employees.map((employee) => ({ employeeId: employee.employeeId })),
+                skipDuplicates: true,
+              },
             },
-          },
-          history: {
-            create: {
-              action: "recurrence_created",
-              userId: user.id,
-              after: {
-                seriesId,
-                occurrence: nextKey,
-                sourceTaskId: seed.id,
+            history: {
+              create: {
+                action: "recurring_task_materialized",
+                userId: template.createdById,
+                onBehalfOfId: template.onBehalfOfId,
+                after: {
+                  recurringTaskId: template.id,
+                  occurrenceDate: occurrenceKey,
+                  durationDays: template.durationDays,
+                },
               },
             },
           },
-        },
-        include: {
-          status: true,
-          employees: true,
-        },
-      });
-
-      await cloneRecurringChildren(seed.id, createdTask.id, seed.occurrence, nextKey, user.id);
-      existingByOccurrence.set(`${seriesId}:${nextKey}`, createdTask);
-      seed = createdTask;
-      created += 1;
+        });
+        created += 1;
+        existingKeys.add(mapKey);
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+        existingKeys.add(mapKey);
+      }
     }
   }
 
-  return created;
+  return { created };
 }
 
-async function cloneRecurringChildren(
-  sourceParentId: string,
-  targetParentId: string,
-  sourceOccurrence: Date | string | null,
-  targetOccurrenceKey: string,
-  actorId: string,
-) {
-  const children = await prisma.task.findMany({
-    where: { parentId: sourceParentId, deletedAt: null },
-    include: { employees: true },
-    orderBy: [{ sortOrder: "asc" }, { dueDate: "asc" }, { title: "asc" }],
-  });
+export async function recurringTaskAccessWhere(user: CurrentUser): Promise<Prisma.RecurringTaskWhereInput> {
+  if (hasPermission(user, "task.view.all")) return {};
 
-  for (const child of children) {
-    const createdChild = await prisma.task.create({
-      data: {
-        title: child.title,
-        description: child.description,
-        result: "",
-        feedback: "",
-        taskType: child.taskType,
-        kind: child.kind,
-        workflowStatus: "active",
-        parentId: targetParentId,
-        projectId: child.projectId,
-        statusId: child.statusId,
-        priority: child.priority,
-        startDate: shiftDateByOccurrence(child.startDate, sourceOccurrence, targetOccurrenceKey),
-        dueDate: shiftDateByOccurrence(child.dueDate, sourceOccurrence, targetOccurrenceKey),
-        dueHistory: [],
-        sortOrder: child.sortOrder,
-        repeats: false,
-        repeatEvery: 1,
-        repeatUnit: "day",
-        repeatPattern: "daily",
-        repeatWeekdays: PrismaRuntime.JsonNull,
-        repeatEndsAt: null,
-        repeatNoticeDays: 7,
-        seriesId: null,
-        occurrence: null,
-        completedAt: null,
-        performerId: child.performerId,
-        ownerId: taskOwnerId(child),
-        createdById: child.createdById,
-        updatedById: actorId,
-        employees: {
-          createMany: {
-            data: child.employees.map((employee) => ({ employeeId: employee.employeeId })),
-            skipDuplicates: true,
+  const filters: Prisma.RecurringTaskWhereInput[] = [];
+
+  if (hasPermission(user, "task.view.own")) {
+    filters.push({
+      OR: [{ ownerId: user.id }, { createdById: user.id }],
+    });
+  }
+
+  filters.push(
+    { performerId: user.id },
+    {
+      employees: {
+        some: {
+          employee: {
+            linkedUserId: user.id,
+            linkStatus: "confirmed",
           },
         },
-        history: {
-          create: {
-            action: "recurrence_child_created",
-            userId: actorId,
-            after: {
-              sourceTaskId: child.id,
-              sourceParentId,
-              parentId: targetParentId,
-              occurrence: targetOccurrenceKey,
+      },
+    },
+  );
+
+  if (hasPermission(user, "team.view.downline")) {
+    const downlineIds = await getDownlineUserIds(user.id);
+    if (downlineIds.length > 0) {
+      filters.push({ ownerId: { in: downlineIds } });
+    }
+  }
+
+  filters.push(...(await delegatedRecurringTaskFilters(user.id)));
+
+  return filters.length > 0 ? { OR: filters } : { id: { in: [] } };
+}
+
+function dueOccurrenceKeys(
+  template: {
+    firstOccurrence: Date | string;
+    repeatEvery: number;
+    repeatPattern: "daily" | "weekdays" | "weekly" | "monthly" | "quarterly" | "yearly";
+    repeatWeekdays: unknown;
+    repeatEndsAt: Date | string | null;
+  },
+  todayKey: string,
+) {
+  const keys: string[] = [];
+  const firstKey = dateKey(template.firstOccurrence);
+  const endsKey = dateKey(template.repeatEndsAt);
+  if (!firstKey || firstKey > todayKey) return keys;
+
+  let currentKey = firstKey;
+  for (let guard = 0; guard < 3660; guard += 1) {
+    if (endsKey && currentKey > endsKey) break;
+    if (currentKey > todayKey) break;
+    keys.push(currentKey);
+
+    const nextKey = nextOccurrenceKey(currentKey, {
+      repeatEvery: template.repeatEvery,
+      repeatPattern: template.repeatPattern,
+      repeatWeekdays: template.repeatWeekdays,
+      anchor: firstKey,
+    });
+    if (!nextKey || nextKey === currentKey) break;
+    currentKey = nextKey;
+  }
+
+  return keys;
+}
+
+async function delegatedRecurringTaskFilters(assistantId: string) {
+  const delegations = await getActiveDelegationsForAssistant(assistantId);
+  const filters: Prisma.RecurringTaskWhereInput[] = [];
+
+  for (const delegation of delegations) {
+    const { managerId, projectId } = delegation;
+    const permissions = await permissionKeysForUser(managerId);
+
+    if (permissions.includes("task.view.all")) {
+      filters.push({ projectId });
+      continue;
+    }
+
+    filters.push(
+      { projectId, ownerId: managerId },
+      { projectId, performerId: managerId },
+      { projectId, createdById: managerId },
+      {
+        projectId,
+        employees: {
+          some: {
+            employee: {
+              linkedUserId: managerId,
+              linkStatus: "confirmed",
             },
           },
         },
       },
-    });
+    );
 
-    await cloneRecurringChildren(child.id, createdChild.id, sourceOccurrence, targetOccurrenceKey, actorId);
+    if (permissions.includes("team.view.downline")) {
+      const downlineIds = await getDownlineUserIds(managerId);
+      if (downlineIds.length > 0) {
+        filters.push({ projectId, ownerId: { in: downlineIds } });
+      }
+    }
   }
+
+  return filters;
 }
 
-function shiftDateByOccurrence(
-  date: Date | string | null | undefined,
-  sourceOccurrence: Date | string | null | undefined,
-  targetOccurrenceKey: string,
-) {
-  const dateText = dateKey(date);
-  const sourceKey = occurrenceReferenceKey({
-    occurrence: sourceOccurrence,
-    dueDate: date,
-    startDate: date,
+async function permissionKeysForUser(userId: string) {
+  const roles = await prisma.userRole.findMany({
+    where: { userId },
+    include: {
+      role: {
+        include: {
+          permissions: {
+            include: { permission: true },
+          },
+        },
+      },
+    },
   });
-  if (!dateText || !sourceKey) return null;
 
-  const shifted = addDaysKey(dateText, daysBetweenKeys(sourceKey, targetOccurrenceKey));
-  return dateFromKey(shifted);
+  return Array.from(
+    new Set(
+      roles.flatMap((userRole) =>
+        userRole.role.permissions.map((rolePermission) => rolePermission.permission.key),
+      ),
+    ),
+  );
 }
 
-function repeatWeekdaysInput(value: unknown) {
-  const weekdays = normalizeRepeatWeekdays(value);
-  return weekdays.length ? weekdays : PrismaRuntime.JsonNull;
+function recurrenceTaskOccurrenceKey(recurringTaskId: string, occurrenceKey: string) {
+  return `${recurringTaskId}:${occurrenceKey}`;
 }
 
-function taskOwnerId(task: { ownerId?: string | null; createdById: string }) {
-  return task.ownerId ?? task.createdById;
+function isUniqueConstraintError(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+export function nonRecurringTaskPayload() {
+  return {
+    repeats: false,
+    repeatEvery: 1,
+    repeatUnit: legacyRepeatUnitForPattern("daily"),
+    repeatPattern: "daily" as const,
+    repeatWeekdays: Prisma.JsonNull,
+    repeatEndsAt: null,
+    repeatNoticeDays: 7,
+    seriesId: null,
+    occurrence: null,
+  };
 }

@@ -24,8 +24,7 @@ import { dateTime, shortDate } from "@/lib/format";
 import { canActAsDelegatedManager, canDeleteTask, canEditTask, canUpdateTaskExecution, canViewTask, hasPermission, requireActiveUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getLinkedEmployeeStatusContexts, getTaskReferenceData } from "@/lib/queries";
-import { ensureRecurringOccurrencesForVisibleTasks } from "@/lib/recurrence";
-import { buildRecurrenceMetaByTaskId, recurrenceSummary } from "@/lib/recurrence-utils";
+import { materializeDueRecurringTasks } from "@/lib/recurrence";
 import { safeUserSelect } from "@/lib/safe-selects";
 import { compareOperationalPriority } from "@/lib/task-priority";
 
@@ -36,7 +35,7 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   const { id } = await params;
   const allowed = await canViewTask(user, id);
   if (!allowed) redirect("/dashboard");
-  await ensureRecurringOccurrencesForVisibleTasks(user);
+  await materializeDueRecurringTasks(user);
   const canUpdate = await canUpdateTaskExecution(user, id);
   const canEdit = await canEditTask(user, id);
   const canDelete = await canDeleteTask(user, id);
@@ -45,6 +44,7 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
     where: { id },
     include: {
       project: true,
+      recurringTask: { select: { id: true, title: true } },
       status: true,
       parent: {
         include: {
@@ -122,7 +122,6 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   if (!task) notFound();
   task.children.sort(compareOperationalPriority);
   task.parent?.children.sort(compareOperationalPriority);
-  const recurrenceMetaByTaskId = buildRecurrenceMetaByTaskId([task, ...task.children]);
   const taskOwnerId = task.ownerId ?? task.createdById;
 
   const canEditTaskDetails = canEdit;
@@ -229,11 +228,8 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
               <Info label="Người tạo" value={task.createdBy.displayName || task.createdBy.username} />
               <Info label="Bắt đầu" value={shortDate(task.startDate)} />
               <Info label="Hạn hoàn thành" value={shortDate(task.dueDate)} />
-              <Info
-                label="Lặp lại"
-                value={task.repeats ? recurrenceSummary(task) : "Không"}
-              />
-              {task.repeats ? <Info label="Ngày lặp" value={shortDate(task.occurrence)} /> : null}
+              {task.recurringTask ? <Info label="Nhiệm vụ thường xuyên" value={task.recurringTask.title} /> : null}
+              {task.recurrenceOccurrence ? <Info label="Kỳ bắt đầu" value={shortDate(task.recurrenceOccurrence)} /> : null}
               <Info label="Hoàn thành" value={task.completedAt ? shortDate(task.completedAt) : "Chưa hoàn thành"} />
               <Info label="Cập nhật" value={dateTime(task.updatedAt)} />
             </dl>
@@ -273,7 +269,6 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
                   statuses={cardStatuses}
                   compact
                   canUpdate={canUpdate}
-                  recurrenceMeta={recurrenceMetaByTaskId.get(child.id)}
                 />
               ))}
               {task.children.length === 0 ? (
@@ -530,8 +525,9 @@ function historyActionLabel(action: string) {
     commented: "Thêm bình luận",
     registration_resubmitted: "Gửi lại đăng ký",
     registration_rejected: "Đăng ký bị từ chối",
-    recurrence_created: "Tạo nhiệm vụ lặp",
-    recurrence_child_created: "Tạo nhiệm vụ con lặp",
+    recurring_task_materialized: "Sinh từ nhiệm vụ thường xuyên",
+    recurrence_created: "Tạo nhiệm vụ lặp cũ",
+    recurrence_child_created: "Tạo nhiệm vụ con lặp cũ",
     obsidian_imported: "Nhập nhiệm vụ từ Obsidian",
     obsidian_child_imported: "Nhập nhiệm vụ con từ Obsidian",
   };

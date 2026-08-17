@@ -10,6 +10,7 @@ import { hasPermission, type CurrentUser } from "@/lib/authz";
 const navItems = [
   { href: "/dashboard", label: "Tổng quan", iconKey: "dashboard", permission: null },
   { href: "/tasks", label: "Nhiệm vụ", iconKey: "tasks", permission: null },
+  { href: "/recurring-tasks", label: "Nhiệm vụ thường xuyên", iconKey: "recurringTasks", permission: null },
   { href: "/kanban", label: "Kanban", iconKey: "kanban", permission: null },
   { href: "/approvals", label: "Phê duyệt", iconKey: "approvals", permission: null },
   { href: "/team", label: "Đội nhóm", iconKey: "team", permission: null },

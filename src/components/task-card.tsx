@@ -1,20 +1,30 @@
 import type { Employee, Project, Task, TaskEmployee, TaskStatusOption } from "@prisma/client";
 import Link from "next/link";
-import { CalendarDays, Check, CheckCircle2, CircleArrowRight, Folder, GitBranch, Repeat2, RotateCcw, UserRound } from "lucide-react";
+import {
+  CalendarDays,
+  Check,
+  CheckCircle2,
+  CircleArrowRight,
+  Folder,
+  GitBranch,
+  Repeat2,
+  RotateCcw,
+  UserRound,
+} from "lucide-react";
 
 import { changeTaskStatusAction, markTaskDoneAction, reopenTaskAction, updateTaskDueAction } from "@/app/actions/tasks";
 import { PriorityBadge, StatusBadge } from "@/components/badge";
 import { isTaskFinalDone } from "@/lib/approvals";
-import { dateInputValue, dueExtendMetrics, isOverdue, shortDate } from "@/lib/format";
-import { recurrenceSummary, type RecurrenceCardMeta, type RecurrenceInstanceMeta } from "@/lib/recurrence-utils";
 import { workflowStatusLabels } from "@/lib/constants";
+import { dateInputValue, dueExtendMetrics, isOverdue, shortDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type ChildTaskForCard = Pick<Task, "id" | "workflowStatus" | "completedAt"> & Partial<Pick<Task, "title" | "priority" | "dueDate">> & {
-  status: Pick<TaskStatusOption, "done"> & Partial<Pick<TaskStatusOption, "label" | "color">>;
-  employees?: Array<TaskEmployee & { employee: Employee }>;
-  children?: Array<Pick<Task, "id" | "workflowStatus" | "completedAt"> & { status: Pick<TaskStatusOption, "done"> }>;
-};
+type ChildTaskForCard = Pick<Task, "id" | "workflowStatus" | "completedAt"> &
+  Partial<Pick<Task, "title" | "priority" | "dueDate">> & {
+    status: Pick<TaskStatusOption, "done"> & Partial<Pick<TaskStatusOption, "label" | "color">>;
+    employees?: Array<TaskEmployee & { employee: Employee }>;
+    children?: Array<Pick<Task, "id" | "workflowStatus" | "completedAt"> & { status: Pick<TaskStatusOption, "done"> }>;
+  };
 
 type TaskWithProject = Task & {
   project: Project;
@@ -22,6 +32,7 @@ type TaskWithProject = Task & {
   performer?: { username: string; displayName: string } | null;
   createdBy?: { username: string; displayName: string } | null;
   parent?: Pick<Task, "id" | "title"> | null;
+  recurringTask?: { id: string; title: string } | null;
   children?: ChildTaskForCard[];
   employees: Array<TaskEmployee & { employee: Employee }>;
 };
@@ -32,14 +43,12 @@ export function TaskCard({
   compact = false,
   canUpdate = false,
   teamRollupLabel,
-  recurrenceMeta,
 }: {
   task: TaskWithProject;
   statuses?: TaskStatusOption[];
   compact?: boolean;
   canUpdate?: boolean;
   teamRollupLabel?: string;
-  recurrenceMeta?: RecurrenceCardMeta;
 }) {
   const nextStatus = nextTaskStatus(task.statusId, statuses);
   const finalDone = isTaskFinalDone(task);
@@ -47,24 +56,13 @@ export function TaskCard({
   const childTotal = task.children?.length ?? 0;
   const childDone = task.children?.filter((child) => isTaskFinalDone(child)).length ?? 0;
   const extend = dueExtendMetrics(task.dueHistory, task.dueDate);
-  const canQuickDone =
-    canUpdate &&
-    !finalDone &&
-    task.workflowStatus === "active" &&
-    childDone === childTotal;
-  const recurrence = task.repeats ? (recurrenceMeta ?? {
-    summary: recurrenceSummary(task),
-    noticeDue: false,
-    overdueCount: 0,
-    overdueInstances: [],
-  }) : null;
+  const canQuickDone = canUpdate && !finalDone && task.workflowStatus === "active" && childDone === childTotal;
 
   return (
     <article
       className={cn(
         "rounded-lg border bg-white p-4 shadow-sm",
         overdue ? "border-red-200" : "border-slate-200",
-        recurrence?.noticeDue ? "border-violet-300 bg-violet-50/40 ring-1 ring-violet-100" : "",
         priorityCardClass(task.priority),
       )}
     >
@@ -123,10 +121,13 @@ export function TaskCard({
             Gia hạn: +{extend.days} ngày / {extend.count} lần
           </span>
         ) : null}
-        {recurrence ? (
-          <span className="inline-flex h-7 items-center gap-1 rounded-md bg-violet-50 px-2 text-violet-700" title={recurrence.summary}>
+        {task.recurringTask ? (
+          <span
+            className="inline-flex h-7 items-center gap-1 rounded-md bg-sky-50 px-2 text-sky-700"
+            title={task.recurringTask.title}
+          >
             <Repeat2 size={14} aria-hidden="true" />
-            {recurrence.summary}
+            Từ nhiệm vụ thường xuyên
           </span>
         ) : null}
         {teamRollupLabel ? (
@@ -135,14 +136,10 @@ export function TaskCard({
             Quản lý trực tiếp: {teamRollupLabel}
           </span>
         ) : (
-          <>
-            <span className="inline-flex h-7 items-center gap-1 rounded-md bg-slate-100 px-2">
-              <UserRound size={14} aria-hidden="true" />
-              {task.employees.length
-                ? task.employees.map((item) => item.employee.name).join(", ")
-                : "Chưa gán"}
-            </span>
-          </>
+          <span className="inline-flex h-7 items-center gap-1 rounded-md bg-slate-100 px-2">
+            <UserRound size={14} aria-hidden="true" />
+            {task.employees.length ? task.employees.map((item) => item.employee.name).join(", ") : "Chưa gán"}
+          </span>
         )}
       </div>
 
@@ -156,22 +153,10 @@ export function TaskCard({
           </div>
           <div className="grid gap-2">
             {task.children?.map((child) => (
-              <ChildTaskRow
-                key={child.id}
-                child={child}
-                canUpdate={canUpdate}
-                teamRollupLabel={teamRollupLabel}
-              />
+              <ChildTaskRow key={child.id} child={child} canUpdate={canUpdate} teamRollupLabel={teamRollupLabel} />
             ))}
           </div>
         </div>
-      ) : null}
-
-      {recurrence?.overdueCount && recurrence.overdueInstances.length ? (
-        <RecurringOverduePanel
-          meta={recurrence}
-          canUpdate={canUpdate}
-        />
       ) : null}
 
       <div className="mt-4 flex flex-wrap gap-2">
@@ -184,7 +169,7 @@ export function TaskCard({
               name="dueDate"
               defaultValue={dateInputValue(task.dueDate)}
               className="h-6 bg-transparent text-xs outline-none"
-            title="Cập nhật hạn hoàn thành"
+              title="Cập nhật hạn hoàn thành"
             />
             <button type="submit" className="font-medium hover:text-blue-700">
               Lưu hạn
@@ -252,11 +237,7 @@ function ChildTaskRow({
   const finalDone = isTaskFinalDone(child);
   const directChildTotal = child.children?.length ?? 0;
   const directChildDone = child.children?.filter((item) => isTaskFinalDone(item)).length ?? 0;
-  const canQuickDone =
-    canUpdate &&
-    !finalDone &&
-    child.workflowStatus === "active" &&
-    directChildDone === directChildTotal;
+  const canQuickDone = canUpdate && !finalDone && child.workflowStatus === "active" && directChildDone === directChildTotal;
   const status = {
     label: child.status.label ?? (child.status.done ? "Đã xong" : "Mở"),
     color: child.status.color ?? (child.status.done ? "emerald" : "slate"),
@@ -264,9 +245,7 @@ function ChildTaskRow({
   };
   const overdue = !finalDone && isOverdue(status, child.dueDate);
   const employees = child.employees ?? [];
-  const employeeNames = employees.length
-    ? employees.map((item) => item.employee.name).join(", ")
-    : "Chưa gán";
+  const employeeNames = employees.length ? employees.map((item) => item.employee.name).join(", ") : "Chưa gán";
 
   return (
     <div
@@ -322,77 +301,6 @@ function ChildTaskRow({
         ) : null}
         <StatusBadge status={status} />
         {child.priority ? <PriorityBadge priority={child.priority} /> : null}
-      </div>
-    </div>
-  );
-}
-
-function RecurringOverduePanel({
-  meta,
-  canUpdate,
-}: {
-  meta: RecurrenceCardMeta;
-  canUpdate: boolean;
-}) {
-  return (
-    <details className="mt-4 rounded-md border border-violet-200 bg-violet-50/70 p-3">
-      <summary className="cursor-pointer text-sm font-semibold text-violet-800">
-        x{meta.overdueCount} kỳ lặp quá hạn chưa hoàn thành
-      </summary>
-      <div className="mt-3 grid gap-2">
-        {meta.overdueInstances.map((instance) => (
-          <RecurringOverdueRow key={instance.id} instance={instance} canUpdate={canUpdate} />
-        ))}
-      </div>
-    </details>
-  );
-}
-
-function RecurringOverdueRow({
-  instance,
-  canUpdate,
-}: {
-  instance: RecurrenceInstanceMeta;
-  canUpdate: boolean;
-}) {
-  const canQuickDone =
-    canUpdate &&
-    !instance.finalDone &&
-    instance.workflowStatus === "active" &&
-    instance.childDoneCount === instance.childCount;
-
-  return (
-    <div className="grid gap-2 rounded-md border border-violet-100 bg-white px-3 py-2 sm:grid-cols-[1fr_auto] sm:items-center">
-      <div className="min-w-0">
-        <Link href={`/tasks/${instance.id}`} className="block truncate text-sm font-medium text-slate-950 hover:text-blue-700">
-          {shortDate(instance.occurrence ?? instance.dueDate)} · {instance.title}
-        </Link>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-          <span>{workflowStatusLabels[instance.workflowStatus]}</span>
-          {instance.childCount ? <span>{instance.childDoneCount}/{instance.childCount} nhiệm vụ con xong</span> : null}
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-        {canQuickDone ? (
-          <form action={markTaskDoneAction}>
-            <input type="hidden" name="id" value={instance.id} />
-            <button
-              type="submit"
-              className="inline-flex h-7 items-center gap-1 rounded-md bg-emerald-600 px-2 text-xs font-semibold text-white hover:bg-emerald-700"
-            >
-              <CheckCircle2 size={13} aria-hidden="true" />
-              Hoàn thành
-            </button>
-          </form>
-        ) : null}
-        <span
-          className={cn(
-            "inline-flex h-6 items-center rounded-md border px-2 text-xs font-medium",
-            instance.status.done ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-slate-50 text-slate-700",
-          )}
-        >
-          {instance.status.label ?? (instance.status.done ? "Đã xong" : "Mở")}
-        </span>
       </div>
     </div>
   );

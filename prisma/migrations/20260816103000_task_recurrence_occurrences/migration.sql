@@ -1,0 +1,2 @@
+-- Intentionally empty.
+-- The recurring occurrence-table design was replaced by recurring task templates.

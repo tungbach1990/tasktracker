@@ -1,4 +1,4 @@
-import { KanbanColumnType, RepeatPattern, RepeatUnit, TaskKind, TaskPriority } from "@prisma/client";
+import { KanbanColumnType, RepeatPattern, TaskKind, TaskPriority } from "@prisma/client";
 import { z } from "zod";
 
 import { slugifyKey, statusColors } from "@/lib/constants";
@@ -18,14 +18,6 @@ export const taskFormSchema = z.object({
   startDate: z.string().optional().default(""),
   dueDate: z.string().optional().default(""),
   sortOrder: z.coerce.number().int().min(0).max(10000).default(100),
-  repeats: z.boolean().default(false),
-  repeatEvery: z.coerce.number().int().min(1).max(365).default(1),
-  repeatUnit: z.nativeEnum(RepeatUnit).default(RepeatUnit.day),
-  repeatPattern: z.nativeEnum(RepeatPattern).default(RepeatPattern.daily),
-  repeatWeekdays: z.array(z.coerce.number().int().min(0).max(6)).default([]),
-  repeatEndsAt: z.string().optional().default(""),
-  repeatNoticeDays: z.coerce.number().int().min(0).max(365).default(7),
-  occurrence: z.string().optional().default(""),
   employeeIds: z.array(z.string()).default([]),
 });
 
@@ -33,18 +25,27 @@ export const childTaskFormSchema = taskFormSchema
   .omit({
     kind: true,
     projectId: true,
-    repeats: true,
-    repeatEvery: true,
-    repeatUnit: true,
-    repeatPattern: true,
-    repeatWeekdays: true,
-    repeatEndsAt: true,
-    repeatNoticeDays: true,
-    occurrence: true,
   })
   .extend({
     parentId: z.string().min(1),
   });
+
+export const recurringTaskFormSchema = z.object({
+  id: z.string().optional(),
+  title: z.string().trim().min(1, "Cần nhập tiêu đề").max(180),
+  description: z.string().trim().max(5000).optional().default(""),
+  projectId: z.string().optional().default(""),
+  priority: z.nativeEnum(TaskPriority),
+  repeatEvery: z.coerce.number().int().min(1).max(365).default(1),
+  repeatPattern: z.nativeEnum(RepeatPattern).default(RepeatPattern.daily),
+  repeatWeekdays: z.array(z.coerce.number().int().min(0).max(6)).default([]),
+  firstOccurrence: z.string().min(1, "Cần chọn ngày bắt đầu chu kỳ"),
+  durationDays: z.coerce.number().int().min(0).max(3650).default(1),
+  repeatNoticeDays: z.coerce.number().int().min(0).max(365).default(7),
+  repeatEndsAt: z.string().optional().default(""),
+  active: z.boolean().default(true),
+  employeeIds: z.array(z.string()).default([]),
+});
 
 export const userFormSchema = z.object({
   username: z.string().trim().min(2).max(64),

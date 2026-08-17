@@ -39,7 +39,6 @@ export type KanbanBoardTask = {
   ownerId: string;
   columnKey: string;
   finalDone: boolean;
-  recurrenceNoticeDue: boolean;
   childCount: number;
   childDoneCount: number;
 };
@@ -472,7 +471,7 @@ function KanbanTaskCard({
       aria-grabbed={dragging}
       className={[
         "relative overflow-hidden rounded-md border p-2.5 shadow-sm",
-        task.recurrenceNoticeDue ? "border-violet-300 bg-violet-50/60 ring-1 ring-violet-100" : "border-slate-200 bg-white",
+        "border-slate-200 bg-white",
         dragging ? "cursor-grabbing opacity-60" : canUpdate ? "cursor-grab active:cursor-grabbing" : "",
       ].join(" ")}
     >

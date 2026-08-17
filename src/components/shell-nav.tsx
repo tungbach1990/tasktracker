@@ -9,6 +9,7 @@ import {
   Download,
   FolderKanban,
   LayoutDashboard,
+  Repeat2,
   Settings,
   Shield,
   Users,
@@ -18,6 +19,7 @@ import {
 const icons = {
   dashboard: LayoutDashboard,
   tasks: FolderKanban,
+  recurringTasks: Repeat2,
   kanban: FolderKanban,
   approvals: ClipboardCheck,
   team: UsersRound,

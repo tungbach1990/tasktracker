@@ -11,8 +11,7 @@ import { priorities } from "@/lib/constants";
 import { hasPermission, requireActiveUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getLinkedEmployeeStatusContexts, getTaskDelegationContexts, getTaskReferenceData, taskScopeWhere } from "@/lib/queries";
-import { ensureRecurringOccurrencesForVisibleTasks } from "@/lib/recurrence";
-import { buildRecurrenceMetaByTaskId } from "@/lib/recurrence-utils";
+import { materializeDueRecurringTasks } from "@/lib/recurrence";
 import { compareOperationalPriority } from "@/lib/task-priority";
 import { getDirectReportLookup } from "@/lib/team";
 
@@ -66,7 +65,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
         .map(([userId]) => userId)
     : [];
   const baseWhere = await taskScopeWhere(user, scope);
-  await ensureRecurringOccurrencesForVisibleTasks(user, baseWhere);
+  await materializeDueRecurringTasks(user);
   const where: Prisma.TaskWhereInput = {
     AND: [
       baseWhere,
@@ -90,6 +89,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
     where,
     include: {
       project: true,
+      recurringTask: { select: { id: true, title: true } },
       status: true,
       createdBy: { select: { username: true, displayName: true } },
       parent: { select: { id: true, title: true } },
@@ -116,7 +116,6 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
   for (const task of tasks) {
     task.children.sort(compareOperationalPriority);
   }
-  const recurrenceMetaByTaskId = buildRecurrenceMetaByTaskId(tasks);
   const cardStatuses = await prisma.taskStatusOption.findMany({
     where: { ownerId: { in: Array.from(new Set([user.id, ...tasks.map((task) => task.ownerId ?? task.createdById)])) } },
     orderBy: [{ ownerId: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
@@ -235,7 +234,6 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
               statuses={cardStatuses}
               canUpdate={canUpdate}
               teamRollupLabel={directReportLabelByTaskId.get(task.id)}
-              recurrenceMeta={recurrenceMetaByTaskId.get(task.id)}
             />
           ))
         ) : (

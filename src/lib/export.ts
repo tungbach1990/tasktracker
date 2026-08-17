@@ -5,6 +5,8 @@ import type {
   KanbanColumnPreference,
   Permission,
   Project,
+  RecurringTask,
+  RecurringTaskEmployee,
   Role,
   RolePermission,
   Task,
@@ -22,13 +24,13 @@ import type {
 
 import { priorityLabel, taskKinds, workflowStatusLabels } from "@/lib/constants";
 import { dueExtendMetrics } from "@/lib/format";
-import { recurrenceSummary } from "@/lib/recurrence-utils";
 import { compareOperationalPriority } from "@/lib/task-priority";
 
 type TaskWithRelations = Task & {
   project: Project;
   status: TaskStatusOption;
   parent?: Pick<Task, "id" | "title"> | null;
+  recurringTask?: Pick<RecurringTask, "id" | "title"> | null;
   createdBy: Pick<User, "username" | "displayName">;
   updatedBy: Pick<User, "username" | "displayName"> | null;
   employees: Array<TaskEmployee & { employee: Employee }>;
@@ -115,9 +117,8 @@ function appendTaskMarkdown(
     `${detailIndent}- Người nhận việc: ${employees || "Chưa gán"}`,
     `${detailIndent}- Độ ưu tiên: ${priorityLabel(task.priority)}`,
     `${detailIndent}- Hạn: ${due}`,
-    `${detailIndent}- Lặp lại: ${task.repeats ? recurrenceSummary(task) : "Không"}`,
-    `${detailIndent}- Lần lặp: ${task.occurrence ? task.occurrence.toISOString().slice(0, 10) : "Không có"}`,
-    `${detailIndent}- Chuỗi lặp: ${task.seriesId ?? "Không có"}`,
+    `${detailIndent}- Nhiệm vụ thường xuyên: ${task.recurringTask?.title ?? "Không"}`,
+    `${detailIndent}- Kỳ bắt đầu: ${task.recurrenceOccurrence ? task.recurrenceOccurrence.toISOString().slice(0, 10) : "Không có"}`,
     `${detailIndent}- Người tạo: ${task.createdBy.displayName || task.createdBy.username}`,
   );
   if (extend.shouldShow) {
@@ -194,6 +195,8 @@ type BackupPayload = {
   kanbanColumns: KanbanColumnPreference[];
   teamRelations: TeamRelation[];
   teamDelegations: TeamDelegation[];
+  recurringTasks: RecurringTask[];
+  recurringTaskEmployees: RecurringTaskEmployee[];
   taskApprovals: TaskApproval[];
   tasks: TaskWithRelations[];
 };
