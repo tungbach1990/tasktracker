@@ -265,7 +265,7 @@ export function RecurringTaskForm({
           />
         </label>
 
-        {recurringTask ? (
+        {recurringTask && !recurringTask.archivedAt ? (
           <label className="flex h-10 items-center gap-2 self-end text-sm font-medium text-slate-700">
             <input
               type="checkbox"
@@ -275,6 +275,8 @@ export function RecurringTaskForm({
             />
             Đang hoạt động
           </label>
+        ) : recurringTask ? (
+          <div className="flex h-10 items-center self-end text-sm font-medium text-slate-500">Đã lưu trữ</div>
         ) : null}
 
         {repeatPattern === "weekly" ? (

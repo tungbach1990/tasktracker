@@ -31,6 +31,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
   const canViewTeam = hasPermission(user, "team.view.downline");
   const canCreateOwnTask = hasPermission(user, "task.create");
   const canChooseProject = canViewAll || hasPermission(user, "project.manage");
+  const canDeleteTasks = hasPermission(user, "task.delete");
 
   const { projects, employees, statuses } = await getTaskReferenceData(user);
   const delegationContexts = await getTaskDelegationContexts(user);
@@ -233,6 +234,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
               task={task}
               statuses={cardStatuses}
               canUpdate={canUpdate}
+              canArchive={canArchiveTask(user.id, canDeleteTasks, canViewAll, task)}
               teamRollupLabel={directReportLabelByTaskId.get(task.id)}
             />
           ))
@@ -244,4 +246,13 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
       </div>
     </AppShell>
   );
+}
+
+function canArchiveTask(
+  userId: string,
+  canDeleteTasks: boolean,
+  canViewAll: boolean,
+  task: { createdById: string; ownerId: string | null },
+) {
+  return canDeleteTasks && (canViewAll || task.createdById === userId || (task.ownerId ?? task.createdById) === userId);
 }

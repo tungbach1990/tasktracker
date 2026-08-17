@@ -482,8 +482,14 @@ function revalidateTaskViews(taskId: string, parentId?: string | null) {
   revalidatePath("/kanban");
   revalidatePath("/team");
   revalidatePath("/approvals");
+  revalidatePath("/trash");
   revalidatePath(`/tasks/${taskId}`);
   if (parentId) revalidatePath(`/tasks/${parentId}`);
+}
+
+function safeReturnTo(formData: FormData) {
+  const returnTo = String(formData.get("returnTo") || "");
+  return returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "";
 }
 
 export async function createTaskAction(formData: FormData) {
@@ -1173,7 +1179,7 @@ export async function updateTaskDueAction(formData: FormData) {
   revalidateTaskViews(taskId, previous.parentId);
 }
 
-export async function deleteTaskAction(formData: FormData) {
+async function archiveTask(formData: FormData, fallbackReturnTo = "") {
   const user = await requireActiveUser();
   if (!hasPermission(user, "task.delete")) redirect("/dashboard");
 
@@ -1194,7 +1200,7 @@ export async function deleteTaskAction(formData: FormData) {
         updatedById: user.id,
         history: {
           create: {
-            action: "moved_to_trash",
+            action: "archived_task",
             userId: user.id,
           },
         },
@@ -1204,7 +1210,51 @@ export async function deleteTaskAction(formData: FormData) {
   await syncParentCompletion(previous.parentId, user.id);
 
   revalidateTaskViews(taskId, previous.parentId);
-  redirect("/tasks");
+  const returnTo = safeReturnTo(formData) || fallbackReturnTo;
+  if (returnTo) redirect(returnTo);
+}
+
+export async function archiveTaskAction(formData: FormData) {
+  await archiveTask(formData);
+}
+
+export async function restoreTaskAction(formData: FormData) {
+  const user = await requireActiveUser();
+  if (!hasPermission(user, "task.delete")) redirect("/dashboard");
+
+  const taskId = idSchema.parse(formData.get("id"));
+  const allowed = await canDeleteTask(user, taskId);
+  if (!allowed) redirect("/dashboard");
+
+  const previous = await prisma.task.findUniqueOrThrow({
+    where: { id: taskId },
+    select: { parentId: true, deletedAt: true },
+  });
+
+  if (previous.deletedAt) {
+    await prisma.task.update({
+      where: { id: taskId },
+      data: {
+        deletedAt: null,
+        updatedById: user.id,
+        history: {
+          create: {
+            action: "restored_from_trash",
+            userId: user.id,
+          },
+        },
+      },
+    });
+  }
+  await syncParentCompletion(previous.parentId, user.id);
+
+  revalidateTaskViews(taskId, previous.parentId);
+  const returnTo = safeReturnTo(formData);
+  if (returnTo) redirect(returnTo);
+}
+
+export async function deleteTaskAction(formData: FormData) {
+  await archiveTask(formData, "/tasks");
 }
 
 export async function addCommentAction(formData: FormData) {

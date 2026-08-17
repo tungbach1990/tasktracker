@@ -1,12 +1,12 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import type { TaskApprovalStatus, TaskApprovalType } from "@prisma/client";
-import { CheckCircle2, MessageSquare, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Archive, CheckCircle2, MessageSquare, Plus, RotateCcw } from "lucide-react";
 
 import {
   addCommentAction,
+  archiveTaskAction,
   approveTaskApprovalAction,
-  deleteTaskAction,
   markTaskDoneAction,
   rejectTaskApprovalAction,
   reopenTaskAction,
@@ -39,6 +39,8 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
   const canUpdate = await canUpdateTaskExecution(user, id);
   const canEdit = await canEditTask(user, id);
   const canDelete = await canDeleteTask(user, id);
+  const canDeleteTasks = hasPermission(user, "task.delete");
+  const canViewAll = hasPermission(user, "task.view.all");
 
   const task = await prisma.task.findUnique({
     where: { id },
@@ -269,6 +271,7 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
                   statuses={cardStatuses}
                   compact
                   canUpdate={canUpdate}
+                  canArchive={canArchiveTask(user.id, canDeleteTasks, canViewAll, child)}
                 />
               ))}
               {task.children.length === 0 ? (
@@ -368,16 +371,20 @@ export default async function TaskDetailPage({ params }: { params: Params }) {
           </section>
 
           {canDelete ? (
-            <section className="rounded-lg border border-red-200 bg-white p-4 shadow-sm">
-              <h2 className="text-sm font-semibold text-red-700">Vùng nguy hiểm</h2>
-              <form action={deleteTaskAction} className="mt-3">
+            <section className="rounded-lg border border-amber-200 bg-white p-4 shadow-sm">
+              <h2 className="text-sm font-semibold text-amber-800">Lưu trữ nhiệm vụ</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Dùng khi nhiệm vụ đã hoàn thành hoặc không làm nữa. Nhiệm vụ sẽ rời khỏi luồng vận hành và có thể khôi phục trong Thùng rác.
+              </p>
+              <form action={archiveTaskAction} className="mt-3">
                 <input type="hidden" name="id" value={task.id} />
+                <input type="hidden" name="returnTo" value="/tasks" />
                 <button
                   type="submit"
-                  className="inline-flex h-9 items-center gap-2 rounded-md bg-red-600 px-3 text-sm font-semibold text-white hover:bg-red-700"
+                  className="inline-flex h-9 items-center gap-2 rounded-md bg-amber-600 px-3 text-sm font-semibold text-white hover:bg-amber-700"
                 >
-                  <Trash2 size={15} aria-hidden="true" />
-                  Xóa nhiệm vụ
+                  <Archive size={15} aria-hidden="true" />
+                  Lưu trữ nhiệm vụ
                 </button>
               </form>
             </section>
@@ -395,6 +402,15 @@ function Info({ label, value }: { label: string; value: string }) {
       <dd className="mt-1 text-slate-800">{value}</dd>
     </div>
   );
+}
+
+function canArchiveTask(
+  userId: string,
+  canDeleteTasks: boolean,
+  canViewAll: boolean,
+  task: { createdById: string; ownerId: string | null },
+) {
+  return canDeleteTasks && (canViewAll || task.createdById === userId || (task.ownerId ?? task.createdById) === userId);
 }
 
 function ContentBlock({ title, value, empty }: { title: string; value: string; empty: string }) {
@@ -526,6 +542,9 @@ function historyActionLabel(action: string) {
     registration_resubmitted: "Gửi lại đăng ký",
     registration_rejected: "Đăng ký bị từ chối",
     recurring_task_materialized: "Sinh từ nhiệm vụ thường xuyên",
+    archived_task: "Lưu trữ nhiệm vụ",
+    moved_to_trash: "Lưu trữ nhiệm vụ",
+    restored_from_trash: "Khôi phục từ thùng rác",
     recurrence_created: "Tạo nhiệm vụ lặp cũ",
     recurrence_child_created: "Tạo nhiệm vụ con lặp cũ",
     obsidian_imported: "Nhập nhiệm vụ từ Obsidian",

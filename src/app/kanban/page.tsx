@@ -30,6 +30,7 @@ export default async function KanbanPage({ searchParams }: { searchParams: Searc
     where,
     include: {
       status: true,
+      parent: { select: { id: true, title: true, parentId: true } },
       children: {
         where: { deletedAt: null },
         include: { status: true },
@@ -84,6 +85,11 @@ export default async function KanbanPage({ searchParams }: { searchParams: Searc
     ownerId: task.ownerId ?? task.createdById,
     columnKey: columnKeyForTask(task),
     finalDone: isTaskFinalDone(task),
+    parentId: task.parentId,
+    parentTitle: task.parent?.title ?? null,
+    parentParentId: task.parent?.parentId ?? null,
+    depthHint: task.parentId ? (task.parent?.parentId ? 2 : 1) : 0,
+    isParent: task.children.length > 0,
     childCount: task.children.length,
     childDoneCount: task.children.filter((child) => isTaskFinalDone(child)).length,
   }));

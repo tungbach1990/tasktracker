@@ -178,9 +178,11 @@ async function delegatedTaskFilters(actorId: string) {
   return { all: false, filters };
 }
 
-export async function taskAccessWhere(user: CurrentUser): Promise<Prisma.TaskWhereInput> {
-  const notDeleted: Prisma.TaskWhereInput = { deletedAt: null };
-  if (hasPermission(user, "task.view.all")) return notDeleted;
+async function taskAccessWhereWithDeletedState(
+  user: CurrentUser,
+  deletedWhere: Prisma.TaskWhereInput,
+): Promise<Prisma.TaskWhereInput> {
+  if (hasPermission(user, "task.view.all")) return deletedWhere;
 
   const filters: Prisma.TaskWhereInput[] = [];
 
@@ -225,7 +227,15 @@ export async function taskAccessWhere(user: CurrentUser): Promise<Prisma.TaskWhe
   const delegated = await delegatedTaskFilters(user.id);
   filters.push(...delegated.filters);
 
-  return filters.length > 0 ? { AND: [notDeleted, { OR: filters }] } : { id: { in: [] } };
+  return filters.length > 0 ? { AND: [deletedWhere, { OR: filters }] } : { id: { in: [] } };
+}
+
+export async function taskAccessWhere(user: CurrentUser): Promise<Prisma.TaskWhereInput> {
+  return taskAccessWhereWithDeletedState(user, { deletedAt: null });
+}
+
+export async function archivedTaskAccessWhere(user: CurrentUser): Promise<Prisma.TaskWhereInput> {
+  return taskAccessWhereWithDeletedState(user, { deletedAt: { not: null } });
 }
 
 export async function canActAsDelegatedManager(actorId: string, managerId: string, projectId: string) {

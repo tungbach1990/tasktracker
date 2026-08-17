@@ -1,8 +1,8 @@
 import Link from "next/link";
 import type { Project, RecurringTask, RecurringTaskEmployee } from "@prisma/client";
-import { Archive, CalendarClock, Plus } from "lucide-react";
+import { Archive, CalendarClock, Plus, Power, PowerOff } from "lucide-react";
 
-import { archiveRecurringTaskAction } from "@/app/actions/recurring-tasks";
+import { archiveRecurringTaskAction, toggleRecurringTaskActiveAction } from "@/app/actions/recurring-tasks";
 import { CountBadge, PriorityBadge } from "@/components/badge";
 import { PageHeader } from "@/components/page-header";
 import { RecurringTaskForm } from "@/components/recurring-task-form";
@@ -185,8 +185,11 @@ function RecurringTaskCard({
   const nextKey = nextOccurrenceOnOrAfter(template);
   const durationDays = Math.max(1, Math.trunc(template.durationDays || 1));
   const dueKey = nextKey ? addDaysKey(nextKey, durationDays) : null;
-  const inNoticeWindow = template.active && !template.archivedAt && isRecurringTemplateInNoticeWindow(template);
-  const dueToday = template.active && nextKey === todayKey;
+  const isArchived = Boolean(template.archivedAt);
+  const isActive = template.active && !isArchived;
+  const isDisabled = !template.active && !isArchived;
+  const inNoticeWindow = isActive && isRecurringTemplateInNoticeWindow(template);
+  const dueToday = isActive && nextKey === todayKey;
   const employeeNames = template.employees.length
     ? template.employees.map((item) => item.employee.name).join(", ")
     : "Chưa gán";
@@ -196,7 +199,7 @@ function RecurringTaskCard({
       className={[
         "rounded-lg border bg-white p-4 shadow-sm",
         inNoticeWindow || dueToday ? "border-sky-300 bg-sky-50/50 ring-1 ring-sky-100" : "border-slate-200",
-        !template.active || template.archivedAt ? "opacity-70" : "",
+        isDisabled || isArchived ? "opacity-75" : "",
       ].join(" ")}
     >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -204,11 +207,14 @@ function RecurringTaskCard({
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-base font-semibold text-slate-950">{template.title}</h3>
             <PriorityBadge priority={template.priority} />
-            {template.active && !template.archivedAt ? (
+            {isActive ? (
               <span className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">Đang hoạt động</span>
+            ) : isDisabled ? (
+              <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">Đã tắt</span>
             ) : (
               <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">Đã lưu trữ</span>
             )}
+            {canEdit && !isArchived ? <RecurringTaskActiveToggle id={template.id} isActive={isActive} /> : null}
             {dueToday ? (
               <span className="rounded-md bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-800">Tới kỳ hôm nay</span>
             ) : null}
@@ -241,17 +247,19 @@ function RecurringTaskCard({
             <p className="mt-2 line-clamp-2 text-sm text-slate-500">{template.description}</p>
           ) : null}
         </div>
-        {canEdit && template.active && !template.archivedAt ? (
-          <form action={archiveRecurringTaskAction}>
-            <input type="hidden" name="id" value={template.id} />
-            <button
-              type="submit"
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-            >
-              <Archive size={15} aria-hidden="true" />
-              Lưu trữ
-            </button>
-          </form>
+        {canEdit && !isArchived ? (
+          <div className="flex flex-wrap gap-2">
+            <form action={archiveRecurringTaskAction}>
+              <input type="hidden" name="id" value={template.id} />
+              <button
+                type="submit"
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <Archive size={15} aria-hidden="true" />
+                Lưu trữ
+              </button>
+            </form>
+          </div>
         ) : null}
       </div>
 
@@ -298,5 +306,50 @@ function RecurringTaskCard({
         </details>
       ) : null}
     </article>
+  );
+}
+
+function RecurringTaskActiveToggle({ id, isActive }: { id: string; isActive: boolean }) {
+  return (
+    <form action={toggleRecurringTaskActiveAction} className="inline-flex">
+      <input type="hidden" name="id" value={id} />
+      <input type="hidden" name="active" value={isActive ? "false" : "true"} />
+      <button
+        type="submit"
+        title={isActive ? "Tắt nhiệm vụ thường xuyên" : "Bật lại nhiệm vụ thường xuyên"}
+        className={[
+          "inline-flex h-7 items-center gap-1.5 rounded-full border px-2 text-xs font-semibold shadow-sm transition-colors",
+          isActive
+            ? "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100"
+            : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
+        ].join(" ")}
+      >
+        <span
+          className={[
+            "relative inline-flex h-4 w-7 items-center rounded-full transition-colors",
+            isActive ? "bg-emerald-500" : "bg-slate-300",
+          ].join(" ")}
+          aria-hidden="true"
+        >
+          <span
+            className={[
+              "size-3 rounded-full bg-white shadow transition-transform",
+              isActive ? "translate-x-3.5" : "translate-x-0.5",
+            ].join(" ")}
+          />
+        </span>
+        {isActive ? (
+          <>
+            <PowerOff size={13} aria-hidden="true" />
+            Tắt
+          </>
+        ) : (
+          <>
+            <Power size={13} aria-hidden="true" />
+            Bật lại
+          </>
+        )}
+      </button>
+    </form>
   );
 }

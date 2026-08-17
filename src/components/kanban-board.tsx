@@ -39,6 +39,11 @@ export type KanbanBoardTask = {
   ownerId: string;
   columnKey: string;
   finalDone: boolean;
+  parentId: string | null;
+  parentTitle: string | null;
+  parentParentId: string | null;
+  depthHint: number;
+  isParent: boolean;
   childCount: number;
   childDoneCount: number;
 };
@@ -50,6 +55,14 @@ export type KanbanBoardStatus = {
   ownerId: string;
   done: boolean;
 };
+
+type HierarchyMode = "all" | "parents" | "children";
+
+const hierarchyModeOptions: Array<{ value: HierarchyMode; label: string }> = [
+  { value: "all", label: "Tất cả" },
+  { value: "parents", label: "Nhiệm vụ cha" },
+  { value: "children", label: "Nhiệm vụ con" },
+];
 
 export function KanbanBoard({
   initialColumns,
@@ -82,6 +95,7 @@ export function KanbanBoard({
   const [resizingKey, setResizingKey] = useState<string | null>(null);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [dropColumnKey, setDropColumnKey] = useState<string | null>(null);
+  const [hierarchyMode, setHierarchyMode] = useState<HierarchyMode>("all");
   const [isPending, startTransition] = useTransition();
   const cleanupResizeRef = useRef<() => void>(() => {});
 
@@ -102,18 +116,27 @@ export function KanbanBoard({
     [columns],
   );
   const visibleColumns = sortedColumns.filter((column) => column.enabled);
+  const filteredTasks = useMemo(
+    () =>
+      boardTasks.filter((task) => {
+        if (hierarchyMode === "parents") return task.isParent;
+        if (hierarchyMode === "children") return Boolean(task.parentId);
+        return true;
+      }),
+    [boardTasks, hierarchyMode],
+  );
   const enabledColumnKeys = useMemo(
     () => new Set(columns.filter((column) => column.enabled).map((column) => column.columnKey)),
     [columns],
   );
-  const hiddenTaskCount = boardTasks.filter((task) => !enabledColumnKeys.has(task.columnKey)).length;
+  const hiddenTaskCount = filteredTasks.filter((task) => !enabledColumnKeys.has(task.columnKey)).length;
   const taskCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const task of boardTasks) {
+    for (const task of filteredTasks) {
       counts.set(task.columnKey, (counts.get(task.columnKey) ?? 0) + 1);
     }
     return counts;
-  }, [boardTasks]);
+  }, [filteredTasks]);
   const draggingTask = draggingTaskId ? boardTasks.find((task) => task.id === draggingTaskId) : null;
 
   function saveColumnPatch(columnKey: string, patch: { widthPx?: number; enabled?: boolean }) {
@@ -299,6 +322,23 @@ export function KanbanBoard({
               </button>
             </form>
 
+            <div className="inline-flex h-9 overflow-hidden rounded-md border border-slate-300 bg-white">
+              {hierarchyModeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setHierarchyMode(option.value)}
+                  className={
+                    hierarchyMode === option.value
+                      ? "bg-slate-950 px-3 text-sm font-semibold text-white"
+                      : "px-3 text-sm font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-950"
+                  }
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
             <details className="relative">
               <summary className="inline-flex h-9 cursor-pointer list-none items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
                 <Columns3 size={16} aria-hidden="true" />
@@ -352,9 +392,9 @@ export function KanbanBoard({
           <div className="flex h-full min-w-full w-max gap-3">
             {visibleColumns.map((column) => {
               const widthPx = clampWidth(column.widthPx);
-              const columnTasks = boardTasks
-                .filter((task) => task.columnKey === column.columnKey)
-                .sort(compareOperationalPriority);
+              const columnTasks = sortColumnTasks(
+                filteredTasks.filter((task) => task.columnKey === column.columnKey),
+              );
               const isDropTarget = dropColumnKey === column.columnKey;
 
               return (
@@ -461,6 +501,9 @@ function KanbanTaskCard({
   const canReopen = canUpdate && (task.finalDone || task.workflowStatus === "pending_completion" || task.workflowStatus === "completion_rejected");
   const canMove = canUpdate && !task.finalDone && (task.workflowStatus === "active" || task.workflowStatus === "pending_completion");
   const ownerOpenStatuses = statuses.filter((status) => status.ownerId === task.ownerId && !status.done);
+  const isChild = Boolean(task.parentId);
+  const isParent = task.isParent || task.childCount > 0;
+  const hierarchyLabel = isChild && isParent ? "Con / Cha" : isChild ? "Con" : isParent ? "Cha" : null;
 
   return (
     <article
@@ -470,8 +513,9 @@ function KanbanTaskCard({
       onDragEnd={onDragEnd}
       aria-grabbed={dragging}
       className={[
-        "relative overflow-hidden rounded-md border p-2.5 shadow-sm",
-        "border-slate-200 bg-white",
+        "relative overflow-hidden rounded-md border bg-white p-2.5 shadow-sm",
+        isChild ? "border-slate-200 border-l-4 border-l-blue-300" : isParent ? "border-slate-300" : "border-slate-200",
+        kanbanChildIndentClass(task.depthHint),
         dragging ? "cursor-grabbing opacity-60" : canUpdate ? "cursor-grab active:cursor-grabbing" : "",
       ].join(" ")}
     >
@@ -486,6 +530,44 @@ function KanbanTaskCard({
       >
         {task.title}
       </Link>
+
+      {hierarchyLabel || isParent ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-1 text-[11px] font-semibold">
+          {hierarchyLabel ? (
+            <span
+              className={
+                isChild
+                  ? "rounded bg-blue-50 px-1.5 py-0.5 text-blue-700 ring-1 ring-blue-100"
+                  : "rounded bg-slate-100 px-1.5 py-0.5 text-slate-700"
+              }
+            >
+              {hierarchyLabel}
+            </span>
+          ) : null}
+          {task.depthHint > 1 ? (
+            <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-700 ring-1 ring-indigo-100">
+              Cấp {task.depthHint}
+            </span>
+          ) : null}
+          {isParent ? (
+            <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700 ring-1 ring-emerald-100">
+              {task.childDoneCount}/{task.childCount} nhiệm vụ con xong
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {task.parentId && task.parentTitle ? (
+        <div className="mt-1 min-w-0 pl-1 text-xs text-slate-500">
+          Thuộc:{" "}
+          <Link
+            href={`/tasks/${task.parentId}`}
+            className="font-medium text-slate-700 [overflow-wrap:anywhere] hover:text-blue-700"
+          >
+            {task.parentTitle}
+          </Link>
+        </div>
+      ) : null}
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         <Link
@@ -566,6 +648,56 @@ function taskAfterMove(task: KanbanBoardTask, columnKey: string): KanbanBoardTas
   }
 
   return { ...task, columnKey };
+}
+
+function sortColumnTasks(tasks: KanbanBoardTask[]) {
+  const sorted = [...tasks].sort(compareOperationalPriority);
+  const byId = new Map(sorted.map((task) => [task.id, task]));
+  const childrenByParentId = new Map<string, KanbanBoardTask[]>();
+
+  for (const task of sorted) {
+    if (!task.parentId) continue;
+    const parent = byId.get(task.parentId);
+    if (!parent || parent.columnKey !== task.columnKey) continue;
+    const siblings = childrenByParentId.get(task.parentId) ?? [];
+    siblings.push(task);
+    childrenByParentId.set(task.parentId, siblings);
+  }
+
+  for (const siblings of childrenByParentId.values()) {
+    siblings.sort(compareOperationalPriority);
+  }
+
+  const result: KanbanBoardTask[] = [];
+  const emitted = new Set<string>();
+
+  function emit(task: KanbanBoardTask) {
+    if (emitted.has(task.id)) return;
+    emitted.add(task.id);
+    result.push(task);
+    for (const child of childrenByParentId.get(task.id) ?? []) {
+      emit(child);
+    }
+  }
+
+  for (const task of sorted) {
+    if (emitted.has(task.id)) continue;
+    const parent = task.parentId ? byId.get(task.parentId) : null;
+    if (parent && parent.columnKey === task.columnKey && !emitted.has(parent.id)) continue;
+    emit(task);
+  }
+
+  for (const task of sorted) {
+    emit(task);
+  }
+
+  return result;
+}
+
+function kanbanChildIndentClass(depthHint: number) {
+  if (depthHint > 1) return "ml-5";
+  if (depthHint > 0) return "ml-3";
+  return "";
 }
 
 function clampWidth(value: number) {

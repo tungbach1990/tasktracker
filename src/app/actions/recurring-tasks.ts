@@ -262,7 +262,6 @@ function recurringData(data: RecurringTaskPayload) {
     repeatNoticeDays: data.repeatNoticeDays,
     durationDays: data.durationDays,
     active: data.active,
-    archivedAt: data.active ? null : new Date(),
   };
 }
 
@@ -341,6 +340,35 @@ export async function updateRecurringTaskAction(formData: FormData) {
   ]);
 
   await materializeDueRecurringTasks(user);
+  revalidateRecurringViews();
+}
+
+export async function toggleRecurringTaskActiveAction(formData: FormData) {
+  const user = await requireActiveUser();
+  const id = idSchema.parse(formData.get("id"));
+  const active = formBoolean(formData, "active");
+  const template = await prisma.recurringTask.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      ownerId: true,
+      createdById: true,
+      onBehalfOfId: true,
+      projectId: true,
+      archivedAt: true,
+    },
+  });
+  if (!template || template.archivedAt || !(await canEditRecurringTask(user, template))) redirect("/dashboard");
+
+  await prisma.recurringTask.update({
+    where: { id },
+    data: {
+      active,
+      updatedById: user.id,
+    },
+  });
+
+  if (active) await materializeDueRecurringTasks(user);
   revalidateRecurringViews();
 }
 

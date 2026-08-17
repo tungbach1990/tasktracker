@@ -21,6 +21,13 @@ export default async function DashboardPage() {
   const teamSummary = await getTeamSummary(user, dashboard.tasks);
   const enabledPreferences = dashboard.preferences.filter((preference) => preference.enabled);
   const canUpdate = hasPermission(user, "task.update");
+  const canDeleteTasks = hasPermission(user, "task.delete");
+  const canViewAll = hasPermission(user, "task.view.all");
+  const canArchiveTaskIds = new Set(
+    dashboard.tasks
+      .filter((task) => canArchiveTask(user.id, canDeleteTasks, canViewAll, task))
+      .map((task) => task.id),
+  );
 
   const upcomingPreference = dashboard.preferences.find((item) => item.sectionKey === "upcoming");
   const priorityPreference = dashboard.preferences.find((item) => item.sectionKey === "priority_focus");
@@ -86,22 +93,22 @@ export default async function DashboardPage() {
             return <MetricsSection key={preference.id} dashboard={dashboard} />;
           }
           if (preference.sectionKey === "priority_focus") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={priorityTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} icon={<Flame size={16} aria-hidden="true" />} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={priorityTasks} statuses={dashboard.statuses} canUpdate={canUpdate} canArchiveTaskIds={canArchiveTaskIds} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} icon={<Flame size={16} aria-hidden="true" />} />;
           }
           if (preference.sectionKey === "overdue") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={overdueTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={overdueTasks} statuses={dashboard.statuses} canUpdate={canUpdate} canArchiveTaskIds={canArchiveTaskIds} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
           }
           if (preference.sectionKey === "today") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={todayTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={todayTasks} statuses={dashboard.statuses} canUpdate={canUpdate} canArchiveTaskIds={canArchiveTaskIds} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
           }
           if (preference.sectionKey === "upcoming") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={upcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={upcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} canArchiveTaskIds={canArchiveTaskIds} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
           }
           if (preference.sectionKey === "after_upcoming") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={afterUpcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={afterUpcomingTasks} statuses={dashboard.statuses} canUpdate={canUpdate} canArchiveTaskIds={canArchiveTaskIds} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
           }
           if (preference.sectionKey === "start_after") {
-            return <TaskSection key={preference.id} title={preference.label} tasks={startAfterTasks} statuses={dashboard.statuses} canUpdate={canUpdate} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
+            return <TaskSection key={preference.id} title={preference.label} tasks={startAfterTasks} statuses={dashboard.statuses} canUpdate={canUpdate} canArchiveTaskIds={canArchiveTaskIds} teamRollupByTaskId={teamSummary.directReportLabelByTaskId} />;
           }
           if (preference.sectionKey === "status_summary") {
             return <StatusSummarySection key={preference.id} title={preference.label} dashboard={dashboard} />;
@@ -369,6 +376,7 @@ function TaskSection({
   tasks,
   statuses,
   canUpdate,
+  canArchiveTaskIds,
   teamRollupByTaskId,
   icon,
 }: {
@@ -376,6 +384,7 @@ function TaskSection({
   tasks: Awaited<ReturnType<typeof getDashboardData>>["tasks"];
   statuses: Awaited<ReturnType<typeof getDashboardData>>["statuses"];
   canUpdate: boolean;
+  canArchiveTaskIds?: Set<string>;
   teamRollupByTaskId?: Map<string, string>;
   icon?: React.ReactNode;
 }) {
@@ -395,6 +404,7 @@ function TaskSection({
               statuses={statuses}
               compact
               canUpdate={canUpdate}
+              canArchive={canArchiveTaskIds?.has(task.id) ?? false}
               teamRollupLabel={teamRollupByTaskId?.get(task.id)}
             />
           ))
@@ -406,6 +416,15 @@ function TaskSection({
       </div>
     </section>
   );
+}
+
+function canArchiveTask(
+  userId: string,
+  canDeleteTasks: boolean,
+  canViewAll: boolean,
+  task: { createdById: string; ownerId: string | null },
+) {
+  return canDeleteTasks && (canViewAll || task.createdById === userId || (task.ownerId ?? task.createdById) === userId);
 }
 
 function StatusSummarySection({

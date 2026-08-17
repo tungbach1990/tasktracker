@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 
 import { getManagerChain, isTaskFinalDone } from "@/lib/approvals";
-import { hasPermission, taskAccessWhere, type CurrentUser } from "@/lib/authz";
+import { archivedTaskAccessWhere, hasPermission, taskAccessWhere, type CurrentUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { materializeDueRecurringTasks } from "@/lib/recurrence";
 import { dashboardNumber, ensureUserSettings } from "@/lib/settings";
@@ -57,6 +57,53 @@ export async function taskScopeWhere(user: CurrentUser, scope: string): Promise<
   if (scope === "all" && hasPermission(user, "task.view.all")) return notDeleted;
 
   return visibleTaskWhere(user);
+}
+
+export async function archivedTaskScopeWhere(user: CurrentUser, scope: string): Promise<Prisma.TaskWhereInput> {
+  const deleted: Prisma.TaskWhereInput = { deletedAt: { not: null } };
+  if (scope === "own") return { AND: [deleted, { OR: [{ ownerId: user.id }, { ownerId: null, createdById: user.id }] }] };
+  if (scope === "assigned") {
+    return {
+      AND: [
+        deleted,
+        {
+          OR: [
+            { performerId: user.id },
+            {
+              employees: {
+                some: {
+                  employee: {
+                    linkedUserId: user.id,
+                    linkStatus: "confirmed",
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+  if (scope === "team") {
+    if (!hasPermission(user, "team.view.downline")) return { id: { in: [] } };
+    const downlineIds = await getDownlineUserIds(user.id);
+    return downlineIds.length
+      ? {
+          AND: [
+            deleted,
+            {
+              OR: [
+                { ownerId: { in: downlineIds } },
+                { ownerId: null, createdById: { in: downlineIds } },
+              ],
+            },
+          ],
+        }
+      : { id: { in: [] } };
+  }
+  if (scope === "all" && hasPermission(user, "task.view.all")) return deleted;
+
+  return archivedTaskAccessWhere(user);
 }
 
 export async function getDashboardData(user: CurrentUser) {

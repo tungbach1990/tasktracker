@@ -1,6 +1,7 @@
 import type { Employee, Project, Task, TaskEmployee, TaskStatusOption } from "@prisma/client";
 import Link from "next/link";
 import {
+  Archive,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -12,7 +13,7 @@ import {
   UserRound,
 } from "lucide-react";
 
-import { changeTaskStatusAction, markTaskDoneAction, reopenTaskAction, updateTaskDueAction } from "@/app/actions/tasks";
+import { archiveTaskAction, changeTaskStatusAction, markTaskDoneAction, reopenTaskAction, updateTaskDueAction } from "@/app/actions/tasks";
 import { PriorityBadge, StatusBadge } from "@/components/badge";
 import { isTaskFinalDone } from "@/lib/approvals";
 import { workflowStatusLabels } from "@/lib/constants";
@@ -42,12 +43,14 @@ export function TaskCard({
   statuses = [],
   compact = false,
   canUpdate = false,
+  canArchive = false,
   teamRollupLabel,
 }: {
   task: TaskWithProject;
   statuses?: TaskStatusOption[];
   compact?: boolean;
   canUpdate?: boolean;
+  canArchive?: boolean;
   teamRollupLabel?: string;
 }) {
   const nextStatus = nextTaskStatus(task.statusId, statuses);
@@ -204,6 +207,19 @@ export function TaskCard({
             >
               <CheckCircle2 size={14} aria-hidden="true" />
               {childTotal ? "Gửi hoàn thành" : "Hoàn thành"}
+            </button>
+          </form>
+        ) : null}
+        {canArchive && finalDone ? (
+          <form action={archiveTaskAction}>
+            <input type="hidden" name="id" value={task.id} />
+            <button
+              type="submit"
+              className="inline-flex h-8 items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 text-xs font-medium text-amber-800 hover:bg-amber-100"
+              title="Lưu trữ nhiệm vụ đã hoàn thành"
+            >
+              <Archive size={14} aria-hidden="true" />
+              Lưu trữ
             </button>
           </form>
         ) : null}

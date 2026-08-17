@@ -14,6 +14,7 @@ const navItems = [
   { href: "/kanban", label: "Kanban", iconKey: "kanban", permission: null },
   { href: "/approvals", label: "Phê duyệt", iconKey: "approvals", permission: null },
   { href: "/team", label: "Đội nhóm", iconKey: "team", permission: null },
+  { href: "/trash", label: "Thùng rác", iconKey: "trash", permission: null },
   { href: "/settings", label: "Cài đặt", iconKey: "settings", permission: null },
   { href: "/admin/users", label: "Người dùng", iconKey: "users", permission: "user.manage" },
   { href: "/admin/projects", label: "Dự án", iconKey: "projects", permission: "project.manage" },

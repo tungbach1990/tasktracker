@@ -12,6 +12,7 @@ import {
   Repeat2,
   Settings,
   Shield,
+  Trash2,
   Users,
   UsersRound,
 } from "lucide-react";
@@ -23,6 +24,7 @@ const icons = {
   kanban: FolderKanban,
   approvals: ClipboardCheck,
   team: UsersRound,
+  trash: Trash2,
   settings: Settings,
   users: Users,
   projects: FolderKanban,
